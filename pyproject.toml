@@ -25,6 +25,8 @@ dependencies = [
     "textarena>=0.7.4",
     "math-verify",
     "scipy",
+    "tau2",
+    "gymnasium>=1.2.2",
 ]
 
 [project.urls]
@@ -77,3 +79,6 @@ python_files = ["test_*.py", "*_test.py"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.uv.sources]
+tau2 = { git = "https://github.com/sierra-research/tau2-bench" }
