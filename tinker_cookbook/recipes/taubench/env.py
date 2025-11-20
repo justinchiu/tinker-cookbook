@@ -239,16 +239,15 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             for task in all_tasks:
                 task._actual_domain = self.domain
 
+        # Shuffle all tasks before splitting (seeded permutation)
+        import random
+        random.Random(self.seed).shuffle(all_tasks)
+
         # Split tasks for train and test
         # Take first 10% for test (or at least 1 task)
         test_size = max(1, len(all_tasks) // 10)
         test_tasks = all_tasks[:test_size]
         train_tasks = all_tasks[test_size:]
-
-        # Shuffle train tasks if seed is provided
-        if self.seed:
-            import random
-            random.Random(self.seed).shuffle(train_tasks)
 
         # Log the task ID split for debugging
         import logging
