@@ -123,11 +123,14 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     task_id: str
     renderer: renderers.Renderer
     num_envs: int
+    actual_domain: str = None  # The real domain for when domain="all"
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task."""
+        # Use actual_domain if provided (for domain="all"), otherwise use domain
+        env_domain = self.actual_domain or self.domain
         return [
-            Tau2Env(self.renderer, self.domain, self.task_id)
+            Tau2Env(self.renderer, env_domain, self.task_id)
             for _ in range(self.num_envs)
         ]
 
@@ -156,7 +159,8 @@ class Tau2Dataset(RLDataset):
                 domain=self.domain,
                 task_id=task.id,
                 renderer=self.renderer,
-                num_envs=self.group_size
+                num_envs=self.group_size,
+                actual_domain=getattr(task, '_actual_domain', None)  # Pass the actual domain if available
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -173,7 +177,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     model_name_for_tokenizer: str
     renderer_name: str | None = None
     group_size: int = 1
-    domain: Literal["telecom", "airline", "retail", "mock"] = "telecom"
+    domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
     task_set: Literal["default", "full", "small"] = "default"
     seed: int = 0
     test_group_size: int = 1
@@ -213,21 +217,27 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         return train_dataset, test_dataset
 
     def _get_train_and_test_tasks(self):
-        """Get tasks for the specified domain and task set, split for train/test."""
-        # Use the registry's task loader directly to get the correct tasks
-        tasks_loader = reg.registry.get_tasks_loader(self.domain)
-        all_tasks = tasks_loader()
+        """Get tasks for the specified domain, split for train/test."""
+        # Handle "all" domain to load tasks from all available domains
+        if self.domain == "all":
+            all_tasks = []
+            domains = ["telecom", "airline", "retail", "telecom-workflow"]  # Exclude mock by default
 
-        # For task_set filtering, just use simple size limits
-        if self.task_set == "small":
-            # Use first 20 tasks for small set
-            all_tasks = all_tasks[:20]
-        elif self.task_set == "full":
-            # Use all tasks
-            pass
-        else:  # default
-            # Use first 50 tasks for default
-            all_tasks = all_tasks[:50]
+            for domain in domains:
+                tasks_loader = reg.registry.get_tasks_loader(domain)
+                domain_tasks = tasks_loader()
+                # Wrap tasks with domain info for "all" mode
+                for task in domain_tasks:
+                    # Store the actual domain with the task
+                    task._actual_domain = domain
+                all_tasks.extend(domain_tasks)  # Always use ALL tasks
+        else:
+            # Single domain - use the registry's task loader directly
+            tasks_loader = reg.registry.get_tasks_loader(self.domain)
+            all_tasks = tasks_loader()  # Always use ALL tasks
+            # Mark tasks with their domain for consistency
+            for task in all_tasks:
+                task._actual_domain = self.domain
 
         # Split tasks for train and test
         # Take first 10% for test (or at least 1 task)
@@ -245,7 +255,29 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         logger = logging.getLogger(__name__)
 
         logger.info("="*60)
-        logger.info(f"TAU2 DATASET SPLIT - {self.domain} ({self.task_set})")
+        if self.domain == "all":
+            logger.info(f"TAU2 MULTI-DOMAIN DATASET - telecom, airline, retail (ALL TASKS)")
+            # Count tasks by domain
+            from collections import defaultdict
+            domain_counts = defaultdict(int)
+            for task in all_tasks:
+                # Extract domain from task ID (format: domain_category_scenario)
+                domain_prefix = task.id.split('_')[0] if '_' in task.id else "unknown"
+                if domain_prefix in ["mobile", "service", "roaming", "bill", "internet", "mms"]:
+                    domain_counts["telecom"] += 1
+                elif domain_prefix in ["flight", "baggage", "seat", "booking", "meal"]:
+                    domain_counts["airline"] += 1
+                elif domain_prefix in ["return", "order", "product", "shipping", "payment"]:
+                    domain_counts["retail"] += 1
+                else:
+                    domain_counts["other"] += 1
+
+            logger.info(f"Task distribution across domains:")
+            for domain, count in sorted(domain_counts.items()):
+                logger.info(f"  {domain}: {count} tasks")
+        else:
+            logger.info(f"TAU2 DATASET - {self.domain} domain (ALL TASKS)")
+
         logger.info("="*60)
         logger.info(f"TEST TASKS ({len(test_tasks)} tasks for evaluation):")
         for task in test_tasks:

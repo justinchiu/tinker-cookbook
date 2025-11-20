@@ -22,7 +22,8 @@ st.set_page_config(page_title="Tau2 Log Analyzer", layout="wide")
 def parse_log_line(line):
     """Parse a single log line."""
     # Pattern: 2025-11-20 11:07:47.734 | INFO | tau2.gym.gym_agent:_log:626 - [[scenario]] message
-    pattern = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| (\w+)\s+\| ([^-]+) - \[\[([^\]]+)\]\] (.*)'
+    # The scenario part can contain nested brackets like [[mobile_data_issue]airplane_mode_on|...[PERSONA:None]]
+    pattern = r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+) \| (\w+)\s+\| ([^-]+) - \[\[(.+?)\]\] (.*)'
     match = re.match(pattern, line)
     if match:
         timestamp_str, level, location, scenario, message = match.groups()
@@ -142,13 +143,20 @@ def main():
         st.metric("Total Episode Attempts", total_episodes)
 
     with col3:
-        completed = df_episodes['success'].notna().sum()
-        st.metric("Completed Episodes", f"{completed} ({completed/total_episodes*100:.1f}%)")
+        if not df_episodes.empty and 'success' in df_episodes.columns:
+            completed = df_episodes['success'].notna().sum()
+            st.metric("Completed Episodes", f"{completed} ({completed/total_episodes*100:.1f}%)")
+        else:
+            st.metric("Completed Episodes", "0")
 
     with col4:
-        successful = df_episodes['success'].sum()
-        if completed > 0:
-            st.metric("Success Rate", f"{successful}/{completed} ({successful/completed*100:.1f}%)")
+        if not df_episodes.empty and 'success' in df_episodes.columns:
+            completed = df_episodes['success'].notna().sum()
+            successful = df_episodes['success'].sum()
+            if completed > 0:
+                st.metric("Success Rate", f"{successful}/{completed} ({successful/completed*100:.1f}%)")
+            else:
+                st.metric("Success Rate", "N/A")
         else:
             st.metric("Success Rate", "N/A")
 
@@ -304,13 +312,18 @@ def main():
     # Success rate by scenario
     st.header("🎯 Performance by Scenario")
 
-    scenario_stats = df_episodes.groupby('scenario').agg({
-        'success': ['count', 'sum', lambda x: x.notna().sum()],
-        'num_events': 'mean'
-    }).round(2)
-    scenario_stats.columns = ['Total Attempts', 'Successes', 'Completions', 'Avg Events']
-    scenario_stats['Success Rate'] = (scenario_stats['Successes'] / scenario_stats['Completions']).fillna(0).round(3)
-    scenario_stats = scenario_stats.sort_values('Success Rate', ascending=False)
+    if not df_episodes.empty and 'scenario' in df_episodes.columns:
+        scenario_stats = df_episodes.groupby('scenario').agg({
+            'success': ['count', 'sum', lambda x: x.notna().sum()],
+            'num_events': 'mean'
+        }).round(2)
+        scenario_stats.columns = ['Total Attempts', 'Successes', 'Completions', 'Avg Events']
+        scenario_stats['Success Rate'] = (scenario_stats['Successes'] / scenario_stats['Completions']).fillna(0).round(3)
+        scenario_stats = scenario_stats.sort_values('Success Rate', ascending=False)
+    else:
+        # Create empty dataframe with expected columns
+        scenario_stats = pd.DataFrame(columns=['Total Attempts', 'Successes', 'Completions', 'Avg Events', 'Success Rate'])
+        st.info("No episode data available yet. The log file may still be initializing.")
 
     # Split into successful and failed scenarios
     successful_scenarios = scenario_stats[scenario_stats['Success Rate'] > 0]
@@ -335,32 +348,43 @@ def main():
     # Distribution plots
     st.header("📊 Distributions")
 
-    col1, col2 = st.columns(2)
+    if not scenario_stats.empty:
+        col1, col2 = st.columns(2)
 
-    with col1:
-        # Attempts per scenario
-        attempts_per_scenario = scenario_stats['Total Attempts'].value_counts().sort_index()
-        fig = px.bar(
-            x=attempts_per_scenario.index,
-            y=attempts_per_scenario.values,
-            title="Distribution of Attempts per Scenario",
-            labels={'x': 'Number of Attempts', 'y': 'Number of Scenarios'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with col1:
+            # Attempts per scenario
+            if 'Total Attempts' in scenario_stats.columns:
+                attempts_per_scenario = scenario_stats['Total Attempts'].value_counts().sort_index()
+                if not attempts_per_scenario.empty:
+                    fig = px.bar(
+                        x=attempts_per_scenario.index,
+                        y=attempts_per_scenario.values,
+                        title="Distribution of Attempts per Scenario",
+                        labels={'x': 'Number of Attempts', 'y': 'Number of Scenarios'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No attempt data available yet")
 
-    with col2:
-        # Success rate distribution
-        success_rates = scenario_stats[scenario_stats['Completions'] > 0]['Success Rate']
-        fig = px.histogram(
-            success_rates,
-            nbins=20,
-            title="Success Rate Distribution",
-            labels={'value': 'Success Rate', 'count': 'Number of Scenarios'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            # Success rate distribution
+            if 'Completions' in scenario_stats.columns and 'Success Rate' in scenario_stats.columns:
+                success_rates = scenario_stats[scenario_stats['Completions'] > 0]['Success Rate'] if 'Completions' in scenario_stats.columns else pd.Series()
+                if not success_rates.empty:
+                    fig = px.histogram(
+                        success_rates,
+                        nbins=20,
+                        title="Success Rate Distribution",
+                        labels={'value': 'Success Rate', 'count': 'Number of Scenarios'}
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No completion data available yet")
+    else:
+        st.info("No scenario statistics available yet. Waiting for training to start...")
 
     # Episode duration analysis
-    if df_timeline['duration_seconds'].notna().any():
+    if not df_timeline.empty and 'duration_seconds' in df_timeline.columns and df_timeline['duration_seconds'].notna().any():
         st.header("⏱️ Episode Duration Analysis")
 
         completed_episodes = df_timeline[df_timeline['duration_seconds'].notna()]

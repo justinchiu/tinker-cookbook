@@ -25,12 +25,6 @@ if [ ! -f "$LOG_FILE" ]; then
     exit 1
 fi
 
-# Check if streamlit is installed
-if ! command -v streamlit &> /dev/null; then
-    echo "Installing streamlit..."
-    pip install streamlit plotly pandas
-fi
-
 echo "Starting Streamlit visualization..."
 echo "Log file: $LOG_FILE"
 echo ""
@@ -38,4 +32,4 @@ echo "Opening browser at http://localhost:8501"
 echo "Press Ctrl+C to stop"
 
 # Run streamlit with the log file path pre-filled
-streamlit run visualize_tau2_logs.py -- "$LOG_FILE"
+uv run streamlit run visualize_tau2_logs.py -- "$LOG_FILE"
