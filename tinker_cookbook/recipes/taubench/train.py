@@ -81,6 +81,8 @@ def main():
     config = build_config(cli_config)
     # Avoid clobbering log dir from your previous run:
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
+    # Setup tau2 logging after log directory is validated
+    tau2_logging_config.setup_tau2_logging()
     asyncio.run(train.main(config))
 
 

@@ -5,15 +5,14 @@ This module must be imported at the very beginning of train.py.
 
 import os
 import sys
+from loguru import logger as loguru_logger
 
-# Configure loguru immediately
-try:
-    from loguru import logger as loguru_logger
+# Remove ALL default handlers immediately
+loguru_logger.remove()
 
-    # Remove ALL default handlers
-    loguru_logger.remove()
 
-    # Get configuration from environment
+def setup_tau2_logging():
+    """Setup tau2 logging after log directory has been validated."""
     tau2_log_level = os.environ.get("TAU2_LOG_LEVEL", "WARNING").upper()
     tau2_log_file = os.environ.get("TAU2_LOG_FILE")
 
@@ -35,7 +34,3 @@ try:
             format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | {name}:{function}:{line} - {message}",
         )
         print(f"tau2 logs to stderr (level: {tau2_log_level})")
-
-except ImportError:
-    # Loguru not installed
-    print("Warning: loguru not installed, cannot configure tau2 logging")
