@@ -1,12 +1,14 @@
 """
 To help you debug your environment, you can use the play_env function to play as the policy by typing in your responses in an environment interactively.
 
-We include an example of playing the Twenty Questions environment in the main function.
+We include an example of playing the Tau2Bench environment in the main function.
 You can run it with:
 
 ```bash
-python -m tinker_cookbook.rl.play_w_env
+python -m tinker_cookbook.rl.play_w_tau2
 ```
+
+It loads up a single task in the telecom domain, which is extremely frustrating.
 """
 
 import asyncio
@@ -76,7 +78,11 @@ async def play_env(env: Env, tokenizer: Tokenizer):
 async def main():
     from tinker_cookbook.recipes.taubench.env import construct_tau2_env
 
-    env = construct_tau2_env()
+    # Use a default task for interactive play
+    domain = "telecom"
+    task_id = "[mobile_data_issue]airplane_mode_on|data_mode_off[PERSONA:None]"
+    model_name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    env = construct_tau2_env(domain=domain, task_id=task_id, model_name=model_name)
     await play_env(env, env.renderer.tokenizer)
 
 
