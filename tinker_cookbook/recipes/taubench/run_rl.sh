@@ -10,10 +10,12 @@
 #   MODEL_NAME=meta-llama/Llama-3.1-8B ./run_rl.sh  # Different model
 #
 # Log levels for TAU2_LOG_LEVEL:
-#   DEBUG - Everything including detailed tau2 debug messages
+#   DEBUG - Everything including detailed tau2 debug messages (creates large logs!)
 #   INFO - Normal operation logs (default)
 #   WARNING - Only warnings and errors
 #   ERROR - Only errors
+#
+# Note: tau2.log file is only created when tau2 actually logs something at the specified level
 
 # Default values
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
@@ -50,7 +52,11 @@ echo ""
 echo "Training complete!"
 echo "=================="
 echo "Training metrics: $LOG_PATH/metrics.jsonl"
-echo "tau2 logs: $TAU2_LOG_FILE"
-echo ""
-echo "To monitor tau2 logs in real-time, run:"
-echo "  tail -f $TAU2_LOG_FILE"
+if [ -f "$TAU2_LOG_FILE" ]; then
+    echo "tau2 logs: $TAU2_LOG_FILE"
+    echo ""
+    echo "To monitor tau2 logs in real-time, run:"
+    echo "  tail -f $TAU2_LOG_FILE"
+else
+    echo "tau2 logs: $TAU2_LOG_FILE (will be created when tau2 logs at $TAU2_LOG_LEVEL level)"
+fi

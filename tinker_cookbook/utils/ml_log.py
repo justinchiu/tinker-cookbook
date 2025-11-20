@@ -503,9 +503,12 @@ def configure_logging_module(path: str, level: int = logging.INFO) -> logging.Lo
         ColorFormatter("%(name)s:%(lineno)d [%(levelname_colored)s] %(message)s")
     )
 
-    # File handler without colors
+    # File handler without colors, but with timestamps
     file_handler = logging.FileHandler(path, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(name)s:%(lineno)d [%(levelname)s] %(message)s"))
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s:%(lineno)d [%(levelname)s] %(message)s",
+                         datefmt="%Y-%m-%d %H:%M:%S")
+    )
 
     # Force override like basicConfig(..., force=True)
     root = logging.getLogger()

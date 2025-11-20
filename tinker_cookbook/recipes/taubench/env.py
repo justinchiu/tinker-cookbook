@@ -5,75 +5,16 @@ from tau2.gym.gym_agent import AgentGymEnv
 import logging
 import os
 
-# Configure tau2 and LiteLLM logging
-# Use a custom logging class to intercept all tau2.* loggers
-class Tau2LoggingFilter:
-    """Filter to redirect tau2.* and LiteLLM logs."""
-    def __init__(self):
-        self.tau2_handler = None
-        self.tau2_level = logging.WARNING
+# Configure LiteLLM (uses standard logging module, not loguru)
+litellm_logger = logging.getLogger("LiteLLM")
+litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors
 
-    def setup(self, log_file=None, log_level="WARNING"):
-        self.tau2_level = getattr(logging, log_level.upper(), logging.WARNING)
-
-        if log_file:
-            self.tau2_handler = logging.FileHandler(log_file)
-            self.tau2_handler.setFormatter(
-                logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            )
-
-    def configure_logger(self, name):
-        """Configure any tau2.* or LiteLLM logger."""
-        if name.startswith("tau2") or name.startswith("LiteLLM"):
-            logger = logging.getLogger(name)
-
-            if self.tau2_handler:
-                # Clear existing handlers to avoid duplication
-                logger.handlers = []
-                logger.addHandler(self.tau2_handler)
-                logger.propagate = False
-            else:
-                # No file handler - suppress stdout by setting high level or using NullHandler
-                if self.tau2_level >= logging.WARNING:
-                    # Just set high level to reduce noise
-                    logger.handlers = []  # Clear any existing handlers
-                    logger.addHandler(logging.NullHandler())  # Add null handler to prevent output
-                    logger.propagate = False
-
-            # Set level
-            if name.startswith("LiteLLM"):
-                logger.setLevel(logging.WARNING)  # Always WARNING for LiteLLM
-            else:
-                logger.setLevel(self.tau2_level)
-
-            return logger
-        return None
-
-# Global filter instance
-tau2_filter = Tau2LoggingFilter()
-
-# Get configuration from environment
-tau2_log_level = os.environ.get("TAU2_LOG_LEVEL", "WARNING").upper()
-tau2_log_file = os.environ.get("TAU2_LOG_FILE")
-
-# Setup the filter
-tau2_filter.setup(log_file=tau2_log_file, log_level=tau2_log_level)
-
-# Configure known loggers immediately
-for logger_name in ["tau2", "tau2.gym", "tau2.gym.gym_agent", "tau2.api",
-                    "tau2.orchestrator", "tau2.database", "tau2.tasks", "LiteLLM"]:
-    tau2_filter.configure_logger(logger_name)
-
-# Monkey-patch getLogger to catch any future tau2.* loggers
-_original_getLogger = logging.getLogger
-
-def patched_getLogger(name=None):
-    logger = _original_getLogger(name)
-    if name and (name.startswith("tau2") or name.startswith("LiteLLM")):
-        tau2_filter.configure_logger(name)
-    return logger
-
-logging.getLogger = patched_getLogger
+# If tau2_log_file is set, also log LiteLLM there
+if os.environ.get("TAU2_LOG_FILE"):
+    handler = logging.FileHandler(os.environ["TAU2_LOG_FILE"])
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    litellm_logger.addHandler(handler)
+    litellm_logger.propagate = False
 
 from tinker import ModelInput
 from tinker_cookbook.completers import StopCondition
@@ -298,5 +239,25 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         if self.seed:
             import random
             random.Random(self.seed).shuffle(train_tasks)
+
+        # Log the task ID split for debugging
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info("="*60)
+        logger.info(f"TAU2 DATASET SPLIT - {self.domain} ({self.task_set})")
+        logger.info("="*60)
+        logger.info(f"TEST TASKS ({len(test_tasks)} tasks for evaluation):")
+        for task in test_tasks:
+            logger.info(f"  TEST: {task.id}")
+
+        logger.info(f"TRAIN TASKS ({len(train_tasks)} tasks for training):")
+        for i, task in enumerate(train_tasks):
+            if i < 5:  # Show first 5 to avoid spam
+                logger.info(f"  TRAIN: {task.id}")
+            elif i == 5:
+                logger.info(f"  ... and {len(train_tasks) - 5} more train tasks")
+                break
+        logger.info("="*60)
 
         return train_tasks, test_tasks

@@ -5,6 +5,9 @@ Run with:
 python -m tinker_cookbook.recipes.taubench.train
 """
 
+# MUST configure tau2 logging BEFORE any tau2 imports
+from tinker_cookbook.recipes.taubench import tau2_logging_config
+
 import asyncio
 from datetime import datetime
 
