@@ -3,6 +3,7 @@ import gymnasium as gym
 from tau2.gym.gym_agent import AgentGymEnv
 from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
 
+import json
 import logging
 import os
 
@@ -42,11 +43,20 @@ class Tau2Env(Env):
 
         domain_policy = self.env._get_policy()
         system_prompt = SYSTEM_PROMPT.format(domain_policy=domain_policy, agent_instruction=AGENT_INSTRUCTION)
+
+        # annoying tool parsing because of tau2's weirdness
+        tools = self.env._get_tools()
+        tool_jsons = [x.model_dump_json() for x in tools]
+        tools = [json.loads(x) for x in tool_jsons]
+
+        system_message = [{"role": "system", "content": system_prompt}]
+        # unfortunately we have to do this by hand lol
+        system_prompt_with_tools = renderer.tokenizer.apply_chat_template(system_message, tools=tools, tokenize=False)
+        # we also have to truncate the first and last special tokens.
         self.messages = [
-            {"role": "system", "content": system_prompt, "tools": self.env._get_tools()},
+            {"role": "system", "content": system_prompt_with_tools[19:-11]},
             {"role": "user", "content": obs},
         ]
-        import pdb; pdb.set_trace()
 
     @property
     def stop_condition(self) -> StopCondition:
