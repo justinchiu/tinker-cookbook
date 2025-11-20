@@ -1,6 +1,7 @@
 import asyncio
 import gymnasium as gym
 from tau2.gym.gym_agent import AgentGymEnv
+from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
 
 import logging
 import os
@@ -38,10 +39,14 @@ class Tau2Env(Env):
         # Note: reset() is synchronous and may block, but we can't make __init__ async
         # For now, we'll leave this as-is since it only happens once per env
         obs, info = self.env.reset()
+
+        domain_policy = self.env._get_policy()
+        system_prompt = SYSTEM_PROMPT.format(domain_policy=domain_policy, agent_instruction=AGENT_INSTRUCTION)
         self.messages = [
-            {"role": "system", "content": "You are a helpful assistant helping a user with their task."},
+            {"role": "system", "content": system_prompt, "tools": self.env._get_tools()},
             {"role": "user", "content": obs},
         ]
+        import pdb; pdb.set_trace()
 
     @property
     def stop_condition(self) -> StopCondition:
