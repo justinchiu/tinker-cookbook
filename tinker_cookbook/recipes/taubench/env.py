@@ -1,5 +1,29 @@
+import asyncio
 import gymnasium as gym
 from tau2.gym.gym_agent import AgentGymEnv
+
+import logging
+import os
+
+# Configure tau2 and LiteLLM logging
+tau2_logger = logging.getLogger("tau2")
+litellm_logger = logging.getLogger("LiteLLM")
+
+# Set up separate log file for tau2/LiteLLM if desired
+if os.environ.get("TAU2_LOG_FILE"):
+    tau2_handler = logging.FileHandler(os.environ["TAU2_LOG_FILE"])
+    tau2_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
+    tau2_logger.addHandler(tau2_handler)
+    tau2_logger.setLevel(logging.INFO)
+    tau2_logger.propagate = False  # Don't propagate to root logger
+
+    litellm_logger.addHandler(tau2_handler)
+    litellm_logger.setLevel(logging.WARNING)  # Only warnings and errors
+    litellm_logger.propagate = False
+else:
+    # Just suppress LiteLLM INFO logs
+    litellm_logger.setLevel(logging.WARNING)
 
 from tinker import ModelInput
 from tinker_cookbook.completers import StopCondition
@@ -20,7 +44,15 @@ class Tau2Env(Env):
         self.domain = domain
         self.task_id = task_id
 
-        self.env = AgentGymEnv(domain=domain, task_id=task_id)
+        self.env = AgentGymEnv(
+            domain=domain,
+            task_id=task_id
+            # Use default user_llm (GPT-4) for now
+            # user_llm="gpt-5-nano",  # This model returns empty responses
+            # user_llm_args={"temperature": 1, "max_tokens": 1024}
+        )
+        # Note: reset() is synchronous and may block, but we can't make __init__ async
+        # For now, we'll leave this as-is since it only happens once per env
         obs, info = self.env.reset()
         self.messages = [
             {"role": "system", "content": "You are a helpful assistant helping a user with their task."},
@@ -46,20 +78,22 @@ class Tau2Env(Env):
         # Convert the assistant's response to a string for the gym environment
         action_str = assistant_message["content"]
 
-        # Step the gym environment
-        obs, reward, terminated, truncated, info = self.env.step(action_str)
+        # Step the gym environment (wrap in thread to avoid blocking)
+        obs, reward, terminated, truncated, info = await asyncio.to_thread(
+            self.env.step, action_str
+        )
 
         # Update conversation with new observation if there is one
         if obs and not (terminated or truncated):
             self.messages.append({"role": "user", "content": obs})
 
-        # Build next observation
-        next_obs = self.renderer.build_generation_prompt(self.messages) if not (terminated or truncated) else None
+        # Build next observation - always provide it (like twenty_questions)
+        next_obs = self.renderer.build_generation_prompt(self.messages)
 
         # Return step result
         return StepResult(
             next_observation=next_obs,
-            next_stop_condition=self.stop_condition if not (terminated or truncated) else None,
+            next_stop_condition=self.stop_condition,  # Always provide stop condition
             episode_done=(terminated or truncated),
             reward=reward,
         )
@@ -151,7 +185,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     domain: Literal["telecom", "airline", "retail", "mock"] = "telecom"
     task_set: Literal["default", "full", "small"] = "default"
     seed: int = 0
-    test_group_size: int = 32
+    test_group_size: int = 1
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""

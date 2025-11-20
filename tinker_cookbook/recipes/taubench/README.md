@@ -6,7 +6,7 @@ uv run python -m tinker_cookbook.recipes.taubench.train \
     batch_size=32 \
     group_size=8 \
     domain=telecom \
-    task_set=small
+    task_set=full
 ```
 
 ### Background: tau2 Benchmark
