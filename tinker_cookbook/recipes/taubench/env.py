@@ -9,13 +9,6 @@ import os
 litellm_logger = logging.getLogger("LiteLLM")
 litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors
 
-# If tau2_log_file is set, also log LiteLLM there
-if os.environ.get("TAU2_LOG_FILE"):
-    handler = logging.FileHandler(os.environ["TAU2_LOG_FILE"])
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    litellm_logger.addHandler(handler)
-    litellm_logger.propagate = False
-
 from tinker import ModelInput
 from tinker_cookbook.completers import StopCondition
 from tinker_cookbook.renderers import Message, Renderer, get_renderer
