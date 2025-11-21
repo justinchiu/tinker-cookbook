@@ -171,6 +171,7 @@ class Renderer:
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        tools: list[dict] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
@@ -541,10 +542,14 @@ class Qwen3Renderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        tools: list[dict] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get tokens and weights for action corresponding to final message.
         """
+        # Inject tools into system message if provided
+        if tools is not None:
+            messages = self._inject_tools_into_system_message(messages, tools)
         return build_supervised_example([], self._render_message, messages, train_on_what)
 
     @property

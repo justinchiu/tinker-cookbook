@@ -44,17 +44,27 @@ class Tau2Env(Env):
         domain_policy = self.env._get_policy()
         system_prompt = SYSTEM_PROMPT.format(domain_policy=domain_policy, agent_instruction=AGENT_INSTRUCTION)
 
-        # annoying tool parsing because of tau2's weirdness
+        # Get tools from tau2 gym and convert to standard OpenAI format
         tools = self.env._get_tools()
         tool_jsons = [x.model_dump_json() for x in tools]
-        tools = [json.loads(x) for x in tool_jsons]
+        tau2_tools = [json.loads(x) for x in tool_jsons]
 
-        system_message = [{"role": "system", "content": system_prompt}]
-        # unfortunately we have to do this by hand lol
-        system_prompt_with_tools = renderer.tokenizer.apply_chat_template(system_message, tools=tools, tokenize=False)
-        # we also have to truncate the first and last special tokens.
+        # Convert tau2 format to OpenAI format
+        self.tools = []
+        for tool in tau2_tools:
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("short_desc", "") or tool.get("long_desc", ""),
+                    "parameters": tool.get("params", {})
+                }
+            }
+            self.tools.append(openai_tool)
+
+        # Store messages without manually injecting tools - let the renderer handle it
         self.messages = [
-            {"role": "system", "content": system_prompt_with_tools[19:-11]},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": obs},
         ]
 
@@ -63,8 +73,8 @@ class Tau2Env(Env):
         return self.renderer.get_stop_sequences()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
-        # Return the initial observation as a tokenized prompt
-        model_input = self.renderer.build_generation_prompt(self.messages)
+        # Return the initial observation as a tokenized prompt with tools injected
+        model_input = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
         return model_input, self.stop_condition
 
     async def step(self, action: Action) -> StepResult:
@@ -124,8 +134,8 @@ class Tau2Env(Env):
                 # Fallback: add as-is (shouldn't happen but just in case)
                 self.messages.append({"role": "user", "content": obs})
 
-        # Build next observation - always provide it (like twenty_questions)
-        next_obs = self.renderer.build_generation_prompt(self.messages)
+        # Build next observation with tools injected - always provide it (like twenty_questions)
+        next_obs = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
 
         # Return step result
         return StepResult(
