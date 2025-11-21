@@ -87,7 +87,7 @@ class Tau2Env(Env):
             import re
             action_str = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message["content"], flags=re.DOTALL).strip()
 
-	"""
+        """
         # Debug: print what we're sending to tau2 gym
         print(f"\n[DEBUG] Sending to tau2 gym:")
         print(f"  action_str: {repr(action_str[:200])}..." if len(action_str) > 200 else f"  action_str: {repr(action_str)}")
@@ -101,7 +101,7 @@ class Tau2Env(Env):
             self.env.step, action_str
         )
 
-	"""
+        """
         # Debug: print observation details
         print(f"\n[DEBUG] Tau2 gym returned:")
         print(f"  obs type: {type(obs)}")
