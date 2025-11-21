@@ -623,12 +623,7 @@ class Qwen3InstructRenderer(Qwen3Renderer):
     def _render_message(self, idx: int, message: Message) -> tuple[list[int], list[int], list[int]]:
         assert message.get("thinking") is None, "CoT tokens not supported in Qwen3 instruct 2507"
         maybe_newline = "\n" if idx > 0 else ""
-
-        role_name = message["role"]
-        if role_name == "tool":
-            role_name = "user"
-
-        ob_str = f"{maybe_newline}<|im_start|>{role_name}\n"
+        ob_str = f"{maybe_newline}<|im_start|>{message['role']}\n"
         ac_content = message["content"]
         # Observation (prompt) part
         if "tool_calls" in message:
@@ -638,8 +633,6 @@ class Qwen3InstructRenderer(Qwen3Renderer):
                     for tool_call in message["tool_calls"]
                 ]
             )
-        if message["role"] == "tool":
-            ac_content = f"<tool_response>{ac_content}</tool_response>"
         ac_content += "<|im_end|>"
         # Action part
         ac_tail_str = ""  # No action tail needed for Qwen format
