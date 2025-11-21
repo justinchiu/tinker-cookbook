@@ -171,9 +171,119 @@ def test_eot_parsing(model_name: str, renderer_name: str):
         _ = renderer.parse_response(response_tokens_double_eot)
 
 
+def test_qwen3_tool_calling():
+    """Test Qwen3 renderer against HF chat template for tool calling scenarios."""
+    model_name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    renderer_name = get_recommended_renderer_name(model_name)
+    cookbook_renderer = get_renderer(renderer_name, tokenizer)
+
+    print(f"\n{'='*80}")
+    print(f"Testing Qwen3 Tool Calling - Model: {model_name}")
+    print(f"{'='*80}\n")
+
+    # Define tools
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a location",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "location": {"type": "string", "description": "City name"}
+                    },
+                    "required": ["location"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tool1",
+                "description": "Tool 1",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tool2",
+                "description": "Tool 2",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }
+    ]
+
+    # Test 1: Single tool response
+    print("Test 1: Single tool response message")
+    print("-" * 80)
+    messages_1 = [
+        {"role": "user", "content": "What's the weather?"},
+        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": '{"location": "SF"}'}]},
+        {"role": "tool", "content": "Temperature is 72F"},
+        {"role": "assistant", "content": "It's 72F in SF"},
+        {"role": "user", "content": "Thanks"},
+    ]
+
+    hf_output_1 = tokenizer.apply_chat_template(messages_1, tools=tools, tokenize=False, add_generation_prompt=True)
+    cookbook_tokens_1 = cookbook_renderer.build_generation_prompt(messages_1).to_ints()  # Exclude last for generation
+    cookbook_output_1 = tokenizer.decode(cookbook_tokens_1)
+
+    print("HF Template Output:")
+    print(hf_output_1)
+    print("\nCookbook Renderer Output:")
+    print(cookbook_output_1)
+    print("\n")
+
+    # Test 2: Consecutive tool responses (grouping)
+    print("Test 2: Consecutive tool response messages")
+    print("-" * 80)
+    messages_2 = [
+        {"role": "user", "content": "Check both"},
+        {"role": "assistant", "content": "Checking", "tool_calls": [{"name": "tool1", "arguments": '{}'}, {"name": "tool2", "arguments": '{}'}]},
+        {"role": "tool", "content": "Result 1"},
+        {"role": "tool", "content": "Result 2"},
+        {"role": "assistant", "content": "Both done"},
+        {"role": "user", "content": "Thanks"},
+    ]
+
+    hf_output_2 = tokenizer.apply_chat_template(messages_2, tools=tools, tokenize=False, add_generation_prompt=True)
+    cookbook_tokens_2 = cookbook_renderer.build_generation_prompt(messages_2).to_ints()
+    cookbook_output_2 = tokenizer.decode(cookbook_tokens_2)
+
+    print("HF Template Output:")
+    print(hf_output_2)
+    print("\nCookbook Renderer Output:")
+    print(cookbook_output_2)
+    print("\n")
+
+    # Test 3: Tool call without tool response yet (generation scenario)
+    print("Test 3: Tool call with generation prompt")
+    print("-" * 80)
+    messages_3 = [
+        {"role": "user", "content": "What's the weather?"},
+        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": '{"location": "SF"}'}]},
+        {"role": "tool", "content": "Temperature is 72F"},
+        {"role": "user", "content": "Thanks"},
+    ]
+
+    hf_output_3 = tokenizer.apply_chat_template(messages_3, tools=tools, tokenize=False, add_generation_prompt=True)
+    cookbook_tokens_3 = cookbook_renderer.build_generation_prompt(messages_3).to_ints()
+    cookbook_output_3 = tokenizer.decode(cookbook_tokens_3)
+
+    print("HF Template Output:")
+    print(hf_output_3)
+    print("\nCookbook Renderer Output:")
+    print(cookbook_output_3)
+    print("\n")
+
+
 if __name__ == "__main__":
     # test_against_hf_chat_templates("meta-llama/Llama-3.2-1B-Instruct")
     # test_against_hf_chat_templates("Qwen/Qwen2.5-VL-3B-Instruct")
-    test_generation_against_hf_chat_templates("openai/gpt-oss-20b")
-    test_supervised_example_against_hf_chat_templates("openai/gpt-oss-20b")
-    test_eot_parsing("Qwen/Qwen3-30B-A3B", "qwen3")
+    # test_generation_against_hf_chat_templates("openai/gpt-oss-20b")
+    # test_supervised_example_against_hf_chat_templates("openai/gpt-oss-20b")
+    # test_eot_parsing("Qwen/Qwen3-30B-A3B", "qwen3")
+    test_qwen3_tool_calling()

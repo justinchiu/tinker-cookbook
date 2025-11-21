@@ -31,6 +31,7 @@ dependencies = [
     "plotly>=6.5.0",
     "pandas>=2.3.3",
     "wandb>=0.23.0",
+    "ipdb>=0.13.13",
 ]
 
 [project.urls]
