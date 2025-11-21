@@ -74,17 +74,55 @@ class Tau2Env(Env):
         # Add assistant's response to conversation
         self.messages.append(assistant_message)
 
-        # Convert the assistant's response to a string for the gym environment
-        action_str = assistant_message["content"]
+        # Convert the assistant's response to the format expected by tau2 gym
+        # Tau2 gym expects either:
+        # - JSON format for tool calls: {"name": "tool_name", "arguments": {...}}
+        # - Plain text for messages
+        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+            # Send the first tool call as JSON (tau2 gym handles one tool at a time)
+            tool_call = assistant_message["tool_calls"][0]
+            action_str = json.dumps(tool_call)
+        else:
+            # Send plain text, stripping any <tool_call> tags if present
+            import re
+            action_str = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message["content"], flags=re.DOTALL).strip()
+
+	"""
+        # Debug: print what we're sending to tau2 gym
+        print(f"\n[DEBUG] Sending to tau2 gym:")
+        print(f"  action_str: {repr(action_str[:200])}..." if len(action_str) > 200 else f"  action_str: {repr(action_str)}")
+        print(f"  assistant_message has tool_calls: {'tool_calls' in assistant_message and assistant_message['tool_calls']}")
+        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+            print(f"  Number of tool_calls: {len(assistant_message['tool_calls'])}")
+        """
 
         # Step the gym environment (wrap in thread to avoid blocking)
         obs, reward, terminated, truncated, info = await asyncio.to_thread(
             self.env.step, action_str
         )
 
+	"""
+        # Debug: print observation details
+        print(f"\n[DEBUG] Tau2 gym returned:")
+        print(f"  obs type: {type(obs)}")
+        print(f"  obs value: {repr(obs[:200])}..." if isinstance(obs, str) and len(obs) > 200 else f"  obs value: {repr(obs)}")
+        print(f"  reward: {reward}")
+        print(f"  terminated: {terminated}, truncated: {truncated}")
+        """
+
         # Update conversation with new observation if there is one
         if obs and not (terminated or truncated):
-            self.messages.append({"role": "user", "content": obs})
+            # Parse observation from tau2 gym format ("role: content")
+            # Observations can be:
+            # - "user: <text>" - user messages
+            # - "tool: {...}" - tool results
+            if obs.startswith("user: "):
+                self.messages.append({"role": "user", "content": obs[6:]})  # Strip "user: " prefix
+            elif obs.startswith("tool: "):
+                self.messages.append({"role": "tool", "content": obs[6:]})  # Strip "tool: " prefix
+            else:
+                # Fallback: add as-is (shouldn't happen but just in case)
+                self.messages.append({"role": "user", "content": obs})
 
         # Build next observation - always provide it (like twenty_questions)
         next_obs = self.renderer.build_generation_prompt(self.messages)
