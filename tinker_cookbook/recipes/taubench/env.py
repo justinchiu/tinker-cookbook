@@ -289,11 +289,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         import random
         random.Random(self.seed).shuffle(all_tasks)
 
-        # Split tasks for train and test
-        # Take first 10% for test (or at least 1 task)
-        test_size = max(1, len(all_tasks) // 10)
-        test_tasks = all_tasks[:test_size]
-        train_tasks = all_tasks[test_size:]
+        # Use all tasks for both train and test (no split)
+        test_tasks = all_tasks
+        train_tasks = all_tasks
 
         # Log the task ID split for debugging
         import logging
