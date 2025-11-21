@@ -224,7 +224,6 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     renderer_name: str | None = None
     group_size: int = 1
     domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
-    task_set: Literal["default", "full", "small"] = "default"
     seed: int = 0
     test_group_size: int = 1
 

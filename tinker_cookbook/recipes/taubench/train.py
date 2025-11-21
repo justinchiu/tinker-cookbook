@@ -22,18 +22,17 @@ class CLIConfig:
     model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     renderer_name: str | None = None
     group_size: int = 8
-    num_epochs: int = 20
-    batch_size: int = 64
+    num_epochs: int = 10
+    batch_size: int = 32
     learning_rate: float = 3e-5
-    max_tokens: int = 512  # Tau2 conversations can be longer than 20 questions
-    eval_every: int = 10  # Less frequent evals
-    save_every: int = 20
+    max_tokens: int = 4096  # Tau2 conversations can be longer than 20 questions
+    eval_every: int = 5  # Less frequent evals
+    save_every: int = 5
     wandb_project: str | None = None
     wandb_name: str | None = None
     log_path: str | None = None
     domain: str = "telecom"
-    task_set: str = "full"  # Start with small set for faster iteration
-    test_group_size: int = 1  # Much smaller parallelism for evaluations
+    test_group_size: int = 1  # Much smaller samples for evaluations
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -59,7 +58,6 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         renderer_name=renderer_name,
         group_size=cli_config.group_size,
         domain=cli_config.domain,
-        task_set=cli_config.task_set,
         test_group_size=cli_config.test_group_size,
     )
 
