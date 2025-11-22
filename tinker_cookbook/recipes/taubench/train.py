@@ -33,6 +33,7 @@ class CLIConfig:
     log_path: str | None = None
     domain: str = "telecom"
     test_group_size: int = 1  # Much smaller samples for evaluations
+    load_checkpoint_path: str | None = None  # Resume from checkpoint (e.g., tinker://...)
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -59,6 +60,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         group_size=cli_config.group_size,
         domain=cli_config.domain,
         test_group_size=cli_config.test_group_size,
+        num_epochs=cli_config.num_epochs,
     )
 
     return train.Config(
@@ -71,6 +73,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         save_every=cli_config.save_every,
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
+        load_checkpoint_path=cli_config.load_checkpoint_path,
     )
 
 

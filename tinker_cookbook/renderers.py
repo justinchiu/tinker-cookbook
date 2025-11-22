@@ -395,13 +395,33 @@ class Llama3Renderer(Renderer):
 
         What can you help me with?<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 
+    Tool calls are rendered as JSON:
+        {"name": "function_name", "parameters": {...}}
     """
 
     def _render_message(self, message: Message) -> tuple[list[int], list[int], list[int]]:
         assert message.get("thinking") is None, "CoT tokens not supported in Llama3"
         ob_str = f"<|start_header_id|>{message['role']}<|end_header_id|>\n\n"
         # Observation (prompt) part
-        ac_str = f"{message['content']}<|eot_id|>"
+        ac_content = message["content"]
+
+        # Add tool calls if present (Llama format: JSON)
+        if "tool_calls" in message and message["tool_calls"]:
+            # Llama only supports single tool calls
+            if len(message["tool_calls"]) > 1:
+                # Just use the first one
+                tool_call = message["tool_calls"][0]
+            else:
+                tool_call = message["tool_calls"][0]
+
+            # Render as JSON: {"name": "...", "parameters": {...}}
+            tool_call_json = json.dumps({
+                "name": tool_call["name"],
+                "parameters": tool_call["arguments"]
+            })
+            ac_content = tool_call_json
+
+        ac_str = f"{ac_content}<|eot_id|>"
         # Action part
         ac_tail_str = ""  # No action tail needed for Llama3 format
         # Action part that's only included in the last message in SFT
@@ -411,9 +431,67 @@ class Llama3Renderer(Renderer):
             self.tokenizer.encode(ac_tail_str, add_special_tokens=False),
         )
 
+    def _inject_tools_into_system_message(self, messages: list[Message], tools: list[dict]) -> list[Message]:
+        """
+        Inject tools into the system message for Llama 3.1+.
+        Based on the Llama 3.1 chat template.
+        """
+        # Find or create system message
+        system_msg = None
+        other_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_msg = msg
+            else:
+                other_messages.append(msg)
+
+        if system_msg is None:
+            system_content = ""
+        else:
+            system_content = system_msg["content"]
+
+        # Build system message with tools (following Llama template format)
+        system_parts = []
+
+        # Add tool definitions
+        system_parts.append("You have access to the following functions. To call a function, please respond with JSON for a function call.")
+        system_parts.append('Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.')
+        system_parts.append("Do not use variables.\n")
+
+        # Add each tool as JSON
+        for tool in tools:
+            system_parts.append(json.dumps(tool, indent=4))
+            system_parts.append("")  # Empty line between tools
+
+        # Add original system content at the end
+        if system_content:
+            system_parts.append(system_content)
+
+        new_system_content = "\n".join(system_parts)
+        updated_messages = [{"role": "system", "content": new_system_content}] + other_messages
+        return updated_messages
+
     def build_generation_prompt(
-        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
+        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None, tools: list[dict] | None = None
     ) -> tinker.ModelInput:
+        # Use tokenizer's chat template when tools are provided (it handles tool injection automatically)
+        if tools is not None:
+            # Let the tokenizer handle everything including tool injection
+            formatted = self.tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                tokenize=False,
+                add_generation_prompt=(role == "assistant")
+            )
+            # Add prefill if provided
+            if prefill and role == "assistant":
+                # Remove the generation prompt we just added and replace with prefill
+                formatted = formatted.rstrip()  # Remove trailing whitespace
+                formatted += prefill
+            tokens = self.tokenizer.encode(formatted, add_special_tokens=False)
+            return tinker.ModelInput.from_ints(tokens)
+
+        # Without tools, use the manual rendering
         tokens: list[int] = []
         tokens.extend(self._bos_tokens)
         for message in messages:
@@ -430,10 +508,57 @@ class Llama3Renderer(Renderer):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        tools: list[dict] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Get tokens and weights for action corresponding to final message
         """
+        # When tools are provided, use tokenizer's chat template to format properly
+        # The tokenizer injects tools into the first user message automatically
+        if tools is not None:
+            # Use tokenizer to get the full formatted text
+            formatted = self.tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            # Tokenize it
+            tokens_list = self.tokenizer.encode(formatted, add_special_tokens=False)
+
+            # Now we need to compute weights based on train_on_what
+            # This is tricky - we need to figure out which tokens correspond to assistant messages
+            # For now, use a simple approach: train on all assistant messages
+            # We can identify assistant message boundaries by looking for <|start_header_id|>assistant<|end_header_id|>
+
+            tokens_tensor = torch.tensor(tokens_list)
+            weights = torch.zeros(len(tokens_list))
+
+            # Find assistant message sections
+            # Look for the pattern: <|start_header_id|>assistant<|end_header_id|>...content...<|eot_id|>
+            start_header = self.tokenizer.encode("<|start_header_id|>assistant<|end_header_id|>\n\n", add_special_tokens=False)
+            eot = self.tokenizer.encode("<|eot_id|>", add_special_tokens=False)
+
+            i = 0
+            while i < len(tokens_list):
+                # Check if we're at the start of an assistant message
+                if tokens_list[i:i+len(start_header)] == start_header:
+                    # Skip the header
+                    i += len(start_header)
+                    # Mark everything until <|eot_id|> as trainable
+                    while i < len(tokens_list) and tokens_list[i:i+len(eot)] != eot:
+                        weights[i] = 1.0
+                        i += 1
+                    # Also mark the <|eot_id|> token
+                    if i < len(tokens_list):
+                        weights[i] = 1.0
+                        i += len(eot)
+                else:
+                    i += 1
+
+            return tokens_tensor, weights
+
+        # Without tools, use the manual rendering
         return build_supervised_example(
             self._bos_tokens,
             lambda _idx, message: self._render_message(message),
@@ -454,7 +579,30 @@ class Llama3Renderer(Renderer):
         return [self._end_message_token]
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
-        return parse_response_for_stop_token(response, self.tokenizer, self._end_message_token)
+        assistant_message, parse_success = parse_response_for_stop_token(
+            response, self.tokenizer, self._end_message_token
+        )
+
+        # Try to parse tool calls from JSON format
+        # Llama format: {"name": "function_name", "parameters": {...}}
+        content = assistant_message["content"]
+        if content.strip().startswith("{") and content.strip().endswith("}"):
+            try:
+                tool_call_json = json.loads(content.strip())
+                if "name" in tool_call_json and "parameters" in tool_call_json:
+                    # This is a tool call
+                    tool_call = {
+                        "name": tool_call_json["name"],
+                        "arguments": tool_call_json["parameters"]
+                    }
+                    assistant_message["tool_calls"] = [tool_call]
+                    # Clear content since it's a tool call
+                    assistant_message["content"] = ""
+            except json.JSONDecodeError:
+                # Not a valid tool call, keep as is
+                pass
+
+        return assistant_message, parse_success
 
 
 class Qwen3Renderer(Renderer):

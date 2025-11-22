@@ -236,6 +236,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
     seed: int = 0
     test_group_size: int = 1
+    num_epochs: int = 1  # Number of epochs to train for
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
@@ -252,9 +253,12 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         # Get tasks based on domain and task set
         train_tasks, test_tasks = self._get_train_and_test_tasks()
 
+        # Repeat tasks for num_epochs
+        train_tasks_with_epochs = train_tasks * self.num_epochs
+
         # Create train and test datasets
         train_dataset = Tau2Dataset(
-            tasks=train_tasks,
+            tasks=train_tasks_with_epochs,
             renderer=renderer,
             domain=self.domain,
             batch_size=self.batch_size,
