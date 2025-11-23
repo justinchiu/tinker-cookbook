@@ -35,6 +35,7 @@ class CLIConfig:
     domain: str = "telecom"
     test_group_size: int = 1  # Much smaller samples for evaluations
     load_checkpoint_path: str | None = None  # Resume from checkpoint (e.g., tinker://...)
+    eval_temperature: float = 0.0  # Greedy decoding for evaluation
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -76,6 +77,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         wandb_project=cli_config.wandb_project,
         wandb_name=wandb_name,
         load_checkpoint_path=cli_config.load_checkpoint_path,
+        eval_temperature=cli_config.eval_temperature,
     )
 
 

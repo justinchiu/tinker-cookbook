@@ -19,6 +19,8 @@ class CustomEvaluator(SamplingClientEvaluator):
         grader_fn: Callable[[str, str], bool],
         model_name: str,
         renderer_name: str,
+        temperature: float = 0.0,
+        max_tokens: int = 100,
     ):
         """
         Initialize the CustomEvaluator.
@@ -27,6 +29,8 @@ class CustomEvaluator(SamplingClientEvaluator):
         """
         self.dataset = dataset
         self.grader_fn = grader_fn
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
         tokenizer = get_tokenizer(model_name)
         self.renderer = renderers.get_renderer(name=renderer_name, tokenizer=tokenizer)
@@ -46,8 +50,8 @@ class CustomEvaluator(SamplingClientEvaluator):
         num_correct = 0
 
         sampling_params = types.SamplingParams(
-            max_tokens=100,
-            temperature=0.7,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
             top_p=1.0,
             stop=self.renderer.get_stop_sequences(),
         )

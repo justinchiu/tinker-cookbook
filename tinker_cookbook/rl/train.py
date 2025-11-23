@@ -230,6 +230,7 @@ class Config:
     model_name: str
     max_tokens: int
     temperature: float = 1.0  # Changing sampling temperature is not generally recommended; does not currently play well with KL penalty
+    eval_temperature: float = 0.0  # Temperature for evaluation (0.0 = greedy decoding)
     compute_post_kl: bool = False
     evaluator_builders: list[SamplingClientEvaluatorBuilder] = chz.field(default_factory=list)
     lora_rank: int = 32
@@ -1084,7 +1085,11 @@ async def main(
     dataset, maybe_test_dataset = await cfg.dataset_builder()
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
-        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+        evaluators.append(
+            RLTestSetEvaluator(
+                maybe_test_dataset, max_tokens=cfg.max_tokens, temperature=cfg.eval_temperature
+            )
+        )
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")
