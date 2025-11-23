@@ -8,126 +8,20 @@ import logging
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Callable, Literal, NotRequired, TypedDict
+from typing import Callable, NotRequired, TypedDict
 
 import tinker
 import torch
-import pydantic
 
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
 logger = logging.getLogger(__name__)
 
-# Tool types are based on kosong (https://github.com/MoonshotAI/kosong).
 
-
-class StrictBase(pydantic.BaseModel):
-    """
-    Pydantic base class that's immutable and doesn't silently ignore extra fields.
-    """
-
-    model_config = pydantic.ConfigDict(frozen=True, extra="forbid")
-
-    def __str__(self) -> str:
-        return repr(self)
-
-
-class ToolCall(StrictBase):
-    """
-    Structured tool invocation following OpenAI/kosong format.
-
-    This represents a request to invoke a tool/function. The structure follows
-    the OpenAI function calling format for compatibility with various LLM APIs.
-
-    Example:
-        tool_call = ToolCall(
-            function=ToolCall.FunctionBody(
-                name="search",
-                arguments='{"query_list": ["python async", "pydantic validation"]}'
-            ),
-            id="call_abc123"
-        )
-    """
-
-    class FunctionBody(pydantic.BaseModel):
-        """
-        Tool call function body containing the tool name and arguments.
-
-        The arguments field must be a valid JSON string that will be parsed
-        by the tool implementation.
-        """
-
-        name: str
-        """The name of the tool to be called."""
-        arguments: str
-        """Arguments of the tool call in JSON string format."""
-
-    type: Literal["function"] = "function"
-    """Tool call type, must be 'function' for compatibility."""
-
-    id: str | None = None
-    """Optional unique identifier for tracking this specific tool call."""
-
-    function: FunctionBody
-    """The function body containing tool name and arguments."""
-
-
-class ToolOk(StrictBase):
-    """
-    Successful tool execution result.
-
-    Used to indicate that a tool call completed successfully, with
-    the main output and optional metadata fields.
-    """
-
-    output: str
-    """The main output/result from the tool execution."""
-
-    message: str = ""
-    """Optional human-readable message about the execution."""
-
-    brief: str = ""
-    """Optional brief summary of the result for logging."""
-
-
-class ToolError(StrictBase):
-    """
-    Tool execution error result.
-
-    Used to indicate that a tool call failed or encountered an error,
-    with details about what went wrong.
-    """
-
-    output: str = ""
-    """Any partial output that was generated before the error."""
-
-    message: str = ""
-    """Error message describing what went wrong."""
-
-    brief: str = ""
-    """Brief error summary for logging."""
-
-
-ToolReturnType = ToolOk | ToolError
-"""Union type for tool execution results - either success or error."""
-
-
-class ToolResult(StrictBase):
-    """
-    Complete tool execution result with tracking ID.
-
-    Wraps the actual result (ToolOk or ToolError) with the corresponding
-    tool call ID for correlation in multi-tool scenarios.
-
-    Note: This class is defined for future use in handling multiple
-    concurrent tool calls with result correlation.
-    """
-
-    tool_call_id: str | None
-    """ID of the tool call this result corresponds to."""
-
-    result: ToolReturnType
-    """The actual execution result (success or error)."""
+class ToolCall(TypedDict):
+    name: str
+    # Each argument is a dict (following HF tokenizer standard)
+    arguments: dict[str, str]
 
 
 # NOTE: we use a broad type definition for the role to be flexible
@@ -141,17 +35,6 @@ class Message(TypedDict):
     tool_calls: NotRequired[list[ToolCall]]
     thinking: NotRequired[str]
     trainable: NotRequired[bool]
-    tool_call_id: NotRequired[str]
-    name: NotRequired[str]
-
-
-def _tool_call_payload(tool_call: ToolCall) -> dict[str, object]:
-    """Minimal JSON payload for embedding in <tool_call> blocks."""
-    # Convert from nested structure to flat format for compatibility
-    return {
-        "name": tool_call.function.name,
-        "args": json.loads(tool_call.function.arguments),
-    }
 
 
 class TrainOnWhat(StrEnum):
@@ -176,7 +59,7 @@ class Renderer:
         raise NotImplementedError
 
     def build_generation_prompt(
-        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
+        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None, tools: list[dict] | None = None
     ) -> tinker.ModelInput:
         raise NotImplementedError
 
@@ -577,39 +460,16 @@ class Qwen3Renderer(Renderer):
 
         </think>
         I can help you with...<|im_end|>
+
+    It is currently missing Qwen 3's functionality for removing thinking spans in multi-turn conversations.
     """
-
-    def __init__(self, tokenizer: Tokenizer, strip_thinking_from_history: bool = True):
-        """
-        Args:
-            tokenizer: The tokenizer to use for encoding.
-            strip_thinking_from_history: When True (default), strips <think>...</think> blocks
-                from assistant messages in multi-turn history. This matches how Qwen3 models
-                were trained - they only see their own thinking during the current turn, not
-                from previous turns. Set to False to preserve thinking in history (useful for
-                certain RL scenarios where you want the extension property for efficiency).
-
-        See https://tinker-docs.thinkingmachines.ai/rl/sequence-extension for details on
-        how this option affects multi-turn RL compute efficiency.
-        """
-        super().__init__(tokenizer)
-        self.strip_thinking_from_history = strip_thinking_from_history
 
     def _render_message(self, idx: int, message: Message) -> tuple[list[int], list[int], list[int]]:
         assert message.get("thinking") is None, "TODO: support CoT in Qwen3 renderer"
         maybe_newline = "\n" if idx > 0 else ""
         ob_str = f"{maybe_newline}<|im_start|>{message['role']}\n"
         ac_content = message["content"]
-        if (
-            self.strip_thinking_from_history
-            and message["role"] == "assistant"
-            and "</think>" in ac_content
-        ):
-            # Multi-turn conversation, we remove the thinking section from the assistant message.
-            # This matches how Qwen3 models were trained - they only see their own thinking
-            # during the current turn, not from previous turns.
-            ac_content = ac_content.split("</think>")[1].lstrip()
-        elif message["role"] == "assistant" and "<think>" not in ac_content:
+        if message["role"] == "assistant" and "<think>" not in ac_content:
             # Matching the paper, we force the assistant to start with <think>. Some SFT datasets include
             # <think> in the assistant messages, we so don't need to re-add it in those cases.
             ob_str += "<think>\n"
@@ -617,7 +477,7 @@ class Qwen3Renderer(Renderer):
         if "tool_calls" in message:
             ac_content += "\n".join(
                 [
-                    f"<tool_call>\n{json.dumps(_tool_call_payload(tool_call))}\n</tool_call>"
+                    f"<tool_call>\n{json.dumps(tool_call)}\n</tool_call>"
                     for tool_call in message["tool_calls"]
                 ]
             )
@@ -632,8 +492,13 @@ class Qwen3Renderer(Renderer):
         )
 
     def build_generation_prompt(
-        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
+        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None, tools: list[dict] | None = None
     ) -> tinker.ModelInput:
+        # If tools are provided, use the tokenizer's chat template to inject them into the system message
+        # This is a hacky workaround since we don't have native tool support in the renderer yet
+        if tools is not None:
+            messages = self._inject_tools_into_system_message(messages, tools)
+
         tokens: list[int] = []  # No BOS token for Qwen
         for idx, message in enumerate(messages):
             ob_part, action_part, _ = self._render_message(idx, message)
@@ -645,6 +510,42 @@ class Qwen3Renderer(Renderer):
         tokens.extend(ob_part)
         tokens.extend(self.tokenizer.encode(prefill or "", add_special_tokens=False))
         return tinker.ModelInput.from_ints(tokens)
+
+    def _inject_tools_into_system_message(self, messages: list[Message], tools: list[dict]) -> list[Message]:
+        """
+        Inject tools into the system message using the tokenizer's chat template.
+        This is based on the hacky implementation from taubench/env.py.
+        """
+        # Deep copy messages to avoid mutations from tokenizer
+        import copy
+        messages = copy.deepcopy(messages)
+
+        # Find or create system message
+        system_msg = None
+        other_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_msg = msg
+            else:
+                other_messages.append(msg)
+
+        if system_msg is None:
+            # Create a default system message if none exists
+            system_msg = {"role": "system", "content": "You are a helpful assistant."}
+
+        # Use tokenizer's chat template to format the system message with tools
+        system_message_list = [{"role": "system", "content": system_msg["content"]}]
+        system_prompt_with_tools = self.tokenizer.apply_chat_template(
+            system_message_list, tools=tools, tokenize=False, add_generation_prompt=False
+        )
+
+        # Truncate the first and last special tokens (<|im_start|>system\n and <|im_end|>)
+        # For Qwen3: <|im_start|>system\n has 19 chars, <|im_end|> has 11 chars
+        system_content = system_prompt_with_tools[19:-11]
+
+        # Create updated messages list with modified system message
+        updated_messages = [{"role": "system", "content": system_content}] + other_messages
+        return updated_messages
 
     def build_supervised_example(
         self,
@@ -677,20 +578,16 @@ class Qwen3Renderer(Renderer):
 
         if not isinstance(tool_call, dict):
             return None
-        name = tool_call.get("name")
-        args = tool_call.get("args")
-        tool_id = tool_call.get("id")
-        if not isinstance(name, str) or not isinstance(args, dict):
+
+        if (
+            "name" not in tool_call
+            or "arguments" not in tool_call
+            or not isinstance(tool_call["name"], str)
+            or not isinstance(tool_call["arguments"], dict)
+        ):
             return None
-        if tool_id is not None and not isinstance(tool_id, str):
-            tool_id = None
-        # Convert to nested structure with arguments as JSON string
-        return [
-            ToolCall(
-                function=ToolCall.FunctionBody(name=name, arguments=json.dumps(args)),
-                id=tool_id,
-            )
-        ]
+
+        return [ToolCall(**tool_call)]
 
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
         assistant_message, parse_success = parse_response_for_stop_token(
@@ -702,14 +599,20 @@ class Qwen3Renderer(Renderer):
         # Follow Qwen docs and Qwen-Agent's tool calling prompt to use <tool_call>...</tool_call> tags to wrap the tool call.
         # - https://qwen.readthedocs.io/en/latest/getting_started/concepts.html#tool-calling
         # - https://github.com/QwenLM/Qwen-Agent/blob/main/qwen_agent/llm/fncall_prompts/nous_fncall_prompt.py#L279-L282
-        match = re.search(r"<tool_call>(.*?)</tool_call>", assistant_message["content"], re.DOTALL)
-        if match:
-            tool_calls = self._parse_tool_call(match.group(1))
-            if tool_calls is None:
-                return assistant_message, False
-            else:
-                assistant_message["tool_calls"] = tool_calls
-                return assistant_message, True
+        # Find all tool calls (there may be multiple)
+        matches = re.findall(r"<tool_call>(.*?)</tool_call>", assistant_message["content"], re.DOTALL)
+        if matches:
+            tool_calls = []
+            for match in matches:
+                parsed = self._parse_tool_call(match)
+                if parsed is None:
+                    return assistant_message, False
+                tool_calls.extend(parsed)
+            assistant_message["tool_calls"] = tool_calls
+            # Strip the <tool_call> tags from content since we've extracted them into tool_calls array
+            # This prevents double-rendering when we build the next prompt
+            assistant_message["content"] = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message["content"], flags=re.DOTALL).strip()
+            return assistant_message, True
         return assistant_message, True
 
 
@@ -719,12 +622,12 @@ class Qwen3DisableThinkingRenderer(Qwen3Renderer):
     """
 
     def build_generation_prompt(
-        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
+        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None, tools: list[dict] | None = None
     ) -> tinker.ModelInput:
         prefill = "\n</think>\n\n" + (prefill or "")
         # XXX this causes inefficiency in RL, because the observations don't grow by appending to the end.
         # Maybe we should just insert this empty thinking block in every message?
-        return super().build_generation_prompt(messages, role, prefill)
+        return super().build_generation_prompt(messages, role, prefill, tools)
 
 
 class Qwen3InstructRenderer(Qwen3Renderer):
@@ -736,16 +639,23 @@ class Qwen3InstructRenderer(Qwen3Renderer):
     def _render_message(self, idx: int, message: Message) -> tuple[list[int], list[int], list[int]]:
         assert message.get("thinking") is None, "CoT tokens not supported in Qwen3 instruct 2507"
         maybe_newline = "\n" if idx > 0 else ""
-        ob_str = f"{maybe_newline}<|im_start|>{message['role']}\n"
+
+        role_name = message["role"]
+        if role_name == "tool":
+            role_name = "user"
+
+        ob_str = f"{maybe_newline}<|im_start|>{role_name}\n"
         ac_content = message["content"]
         # Observation (prompt) part
-        if "tool_calls" in message:
+        if "tool_calls" in message and message["tool_calls"] is not None:
             ac_content += "\n".join(
                 [
-                    f"<tool_call>\n{json.dumps(_tool_call_payload(tool_call))}\n</tool_call>"
+                    f"<tool_call>\n{json.dumps(tool_call)}\n</tool_call>"
                     for tool_call in message["tool_calls"]
                 ]
             )
+        if message["role"] == "tool":
+            ac_content = f"<tool_response>{ac_content}</tool_response>"
         ac_content += "<|im_end|>"
         # Action part
         ac_tail_str = ""  # No action tail needed for Qwen format
@@ -760,18 +670,13 @@ class Qwen3InstructRenderer(Qwen3Renderer):
 class DeepSeekV3Renderer(Renderer):
     """
     Format like this (no newlines between messages):
-        <|begin_of_sentence|><|User|>What can you help me with?<|Assistant|><think>Thinking...</think>I can help you with...<|end_of_sentence|>
+        <|begin_of_sentence|><|User|>What can you help me with?<|Assistant|><think>Thinking...</think>I can help you with...<|end_of_centence|>
     For no-think, just use <|Assistant|></think>
-    Deepseek renderer does not support the system role out of the box. You can set system_role_as_user to True to automatically convert the system role to the user role.
     """
-
-    def __init__(self, tokenizer: Tokenizer, system_role_as_user: bool = False):
-        super().__init__(tokenizer)
-        self.system_role_as_user = system_role_as_user
 
     def _render_message(self, message: Message) -> tuple[list[int], list[int], list[int]]:
         assert message.get("thinking") is None, "TODO: support CoT in DsV3 renderer"
-        if message["role"] == "user" or (self.system_role_as_user and message["role"] == "system"):
+        if message["role"] == "user":
             role_token = self._get_special_token("User")
         elif message["role"] == "assistant":
             role_token = self._get_special_token("Assistant")
