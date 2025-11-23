@@ -90,8 +90,16 @@ class Tau2Env(Env):
         # - Plain text for messages
         if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
             # Send the first tool call as JSON (tau2 gym handles one tool at a time)
+            # The renderer returns tau2 format: {"id": "...", "name": "...", "arguments": {...}}
+            # We just need to extract name and arguments for tau2 gym
             tool_call = assistant_message["tool_calls"][0]
-            action_str = json.dumps(tool_call)
+
+            # Build tau2 format (just name + arguments)
+            tau2_tool_call = {
+                "name": tool_call["name"],
+                "arguments": tool_call["arguments"]
+            }
+            action_str = json.dumps(tau2_tool_call)
         else:
             # Send plain text, stripping any <tool_call> tags if present
             import re

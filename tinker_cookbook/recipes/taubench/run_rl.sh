@@ -12,6 +12,7 @@
 #   MODEL_NAME=meta-llama/Llama-3.1-8B ./run_rl.sh  # Different model
 #   MODEL_NAME=Qwen/Qwen3-32B DOMAIN=retail ./run_rl.sh  # Specific model and domain
 #   WANDB_PROJECT=my-project ./run_rl.sh          # Custom WandB project
+#   CHECKPOINT=tinker://abc123.../weights/000062 ./run_rl.sh  # Continue from checkpoint
 #
 # WandB Integration (enabled by default if API key is set):
 #   export WANDB_API_KEY=your_key_here             # Enable WandB logging
@@ -29,6 +30,7 @@
 # Default values
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
 DOMAIN="${DOMAIN:-all}"  # Default to training on ALL domains
+CHECKPOINT="${CHECKPOINT:-}"  # Optional checkpoint to continue from
 
 # Create filesystem-safe model name (replace / with -)
 SAFE_MODEL_NAME="${MODEL_NAME//\//-}"
@@ -56,6 +58,9 @@ echo "Starting tau2 RL training..."
 echo "=============================="
 echo "Model: $MODEL_NAME"
 echo "Domain: $DOMAIN"
+if [ ! -z "$CHECKPOINT" ]; then
+    echo "Checkpoint: $CHECKPOINT"
+fi
 echo "Log path: $LOG_PATH"
 echo "tau2 log file: $TAU2_LOG_FILE"
 echo "tau2 log level: $TAU2_LOG_LEVEL"
@@ -68,6 +73,12 @@ echo ""
 export TAU2_LOG_LEVEL="$TAU2_LOG_LEVEL"
 export TAU2_LOG_FILE="$TAU2_LOG_FILE"
 
+# Build checkpoint argument if provided
+CHECKPOINT_ARG=""
+if [ ! -z "$CHECKPOINT" ]; then
+    CHECKPOINT_ARG="load_checkpoint_path=$CHECKPOINT"
+fi
+
 # Run the training with uv
 # With TAU2_LOG_FILE set: All tau2 logs (INFO and above) go to file ONLY, not stdout
 # Training metrics still go to stdout and $LOG_PATH/metrics.jsonl
@@ -75,6 +86,7 @@ uv run python -m tinker_cookbook.recipes.taubench.train \
     model_name="$MODEL_NAME" \
     domain="$DOMAIN" \
     log_path="$LOG_PATH" \
+    $CHECKPOINT_ARG \
     $WANDB_ARGS \
     "$@"  # Pass any additional command line arguments
 

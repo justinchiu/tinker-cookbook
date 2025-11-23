@@ -21,10 +21,11 @@ from tinker_cookbook.rl import train
 class CLIConfig:
     model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     renderer_name: str | None = None
-    group_size: int = 8
+    lora_rank: int = 32
+    group_size: int = 4
     num_epochs: int = 10
-    batch_size: int = 32
-    learning_rate: float = 3e-5
+    batch_size: int = 8
+    learning_rate: float = 5e-5
     max_tokens: int = 4096  # Tau2 conversations can be longer than 20 questions
     eval_every: int = 5  # Less frequent evals
     save_every: int = 5
@@ -68,6 +69,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         log_path=log_path,
         dataset_builder=dataset_builder,
         learning_rate=cli_config.learning_rate,
+        lora_rank=cli_config.lora_rank,
         max_tokens=cli_config.max_tokens,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,

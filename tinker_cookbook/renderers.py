@@ -513,55 +513,15 @@ class Llama3Renderer(Renderer):
         """
         Get tokens and weights for action corresponding to final message
         """
-        # When tools are provided, use tokenizer's chat template to format properly
-        # The tokenizer injects tools into the first user message automatically
+        # When tools are provided, inject them into the system message and use manual rendering
+        # This avoids the tokenizer's chat template expanding all arguments with null values
         if tools is not None:
-            # Use tokenizer to get the full formatted text
-            formatted = self.tokenizer.apply_chat_template(
-                messages,
-                tools=tools,
-                tokenize=False,
-                add_generation_prompt=False
-            )
-            # Tokenize it
-            tokens_list = self.tokenizer.encode(formatted, add_special_tokens=False)
+            messages = self._inject_tools_into_system_message(messages, tools)
 
-            # Now we need to compute weights based on train_on_what
-            # This is tricky - we need to figure out which tokens correspond to assistant messages
-            # For now, use a simple approach: train on all assistant messages
-            # We can identify assistant message boundaries by looking for <|start_header_id|>assistant<|end_header_id|>
-
-            tokens_tensor = torch.tensor(tokens_list)
-            weights = torch.zeros(len(tokens_list))
-
-            # Find assistant message sections
-            # Look for the pattern: <|start_header_id|>assistant<|end_header_id|>...content...<|eot_id|>
-            start_header = self.tokenizer.encode("<|start_header_id|>assistant<|end_header_id|>\n\n", add_special_tokens=False)
-            eot = self.tokenizer.encode("<|eot_id|>", add_special_tokens=False)
-
-            i = 0
-            while i < len(tokens_list):
-                # Check if we're at the start of an assistant message
-                if tokens_list[i:i+len(start_header)] == start_header:
-                    # Skip the header
-                    i += len(start_header)
-                    # Mark everything until <|eot_id|> as trainable
-                    while i < len(tokens_list) and tokens_list[i:i+len(eot)] != eot:
-                        weights[i] = 1.0
-                        i += 1
-                    # Also mark the <|eot_id|> token
-                    if i < len(tokens_list):
-                        weights[i] = 1.0
-                        i += len(eot)
-                else:
-                    i += 1
-
-            return tokens_tensor, weights
-
-        # Without tools, use the manual rendering
+        # Use the manual rendering path which properly handles tool calls
         return build_supervised_example(
             self._bos_tokens,
-            lambda _idx, message: self._render_message(message),
+            lambda idx, message: self._render_message(idx, message),
             messages,
             train_on_what,
         )
