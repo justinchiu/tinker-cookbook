@@ -280,6 +280,55 @@ def test_qwen3_tool_calling():
     print("\n")
 
 
+def test_tau2_to_openai_conversion():
+    """Test tau2 to OpenAI message format conversion."""
+    from tinker_cookbook.recipes.taubench.sft_dataset import _convert_tau2_messages_to_openai
+
+    tau2_messages = [
+        {"role": "system", "content": "You are helpful.", "turn_idx": 0},
+        {"role": "user", "content": "What's the weather?", "turn_idx": 1},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "t1", "name": "get_weather", "arguments": {"city": "SF"}, "requestor": "assistant"}
+        ], "turn_idx": 2},
+        {"id": "t1", "role": "tool", "content": "Sunny", "requestor": "assistant", "error": False, "turn_idx": 3},
+        {"role": "assistant", "content": "It's sunny!", "tool_calls": None, "turn_idx": 4}
+    ]
+
+    openai_messages = _convert_tau2_messages_to_openai(tau2_messages)
+
+    assert openai_messages[0] == {"role": "system", "content": "You are helpful."}
+    assert openai_messages[1] == {"role": "user", "content": "What's the weather?"}
+    assert openai_messages[2]["role"] == "assistant"
+    assert openai_messages[2]["content"] == ""
+    assert openai_messages[2]["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert openai_messages[3]["role"] == "tool"
+    assert openai_messages[3]["content"] == "Sunny"
+    assert openai_messages[4] == {"role": "assistant", "content": "It's sunny!"}
+
+
+def test_llama_renderer_matches_official():
+    """Test Llama3Renderer matches official tokenizer output."""
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    renderer = get_renderer("llama3", tokenizer=tokenizer)
+
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "What's the weather?"}
+    ]
+    tools = [{"type": "function", "function": {
+        "name": "get_weather",
+        "description": "Get weather",
+        "parameters": {"type": "object", "properties": {"location": {"type": "string"}}, "required": ["location"]}
+    }}]
+
+    # Compare outputs
+    official = tokenizer.apply_chat_template(messages, tools=tools, tokenize=False, add_generation_prompt=True)
+    renderer_tokens = renderer.build_generation_prompt(messages, tools=tools)
+    renderer_output = tokenizer.decode(renderer_tokens.to_ints())
+
+    assert official == renderer_output, f"Official != Renderer\nOfficial:\n{official}\n\nRenderer:\n{renderer_output}"
+
+
 if __name__ == "__main__":
     # test_against_hf_chat_templates("meta-llama/Llama-3.2-1B-Instruct")
     # test_against_hf_chat_templates("Qwen/Qwen2.5-VL-3B-Instruct")
