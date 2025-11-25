@@ -2,14 +2,17 @@
 Dataset builder for supervised fine-tuning on tau2 simulation data.
 """
 
+import chz
 import json
 import logging
 import random
 from pathlib import Path
 from typing import cast
 
-import chz
+import tau2.registry as reg
+
 import tinker
+from tinker_cookbook.recipes.taubench.env import construct_tau2_env
 from tinker_cookbook.renderers import TrainOnWhat
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
@@ -49,28 +52,21 @@ def _get_tau2_tools(domain: str, task_id: str | None = None) -> list[dict] | Non
         domain: Domain name (e.g., "telecom")
         task_id: Optional specific task ID. If None, uses first task from domain.
     """
-    try:
-        from tinker_cookbook.recipes.taubench.env import construct_tau2_env
+    # Use a default task if none provided
+    if task_id is None:
+        tasks_loader = reg.registry.get_tasks_loader(domain)
+        tasks = tasks_loader()
+        if not tasks:
+            logger.warning(f"No tasks found for domain '{domain}'")
+            return None
+        task_id = tasks[0].id
 
-        # Use a default task if none provided
-        if task_id is None:
-            import tau2.registry as reg
-            tasks_loader = reg.registry.get_tasks_loader(domain)
-            tasks = tasks_loader()
-            if not tasks:
-                logger.warning(f"No tasks found for domain '{domain}'")
-                return None
-            task_id = tasks[0].id
+    # Create env using the same method as RL training
+    # Use Qwen3 as default for consistency
+    env = construct_tau2_env(domain=domain, task_id=task_id, model_name="Qwen/Qwen3-30B-A3B-Instruct-2507")
 
-        # Create env using the same method as RL training
-        # Use Qwen3 as default for consistency
-        env = construct_tau2_env(domain=domain, task_id=task_id, model_name="Qwen/Qwen3-30B-A3B-Instruct-2507")
-
-        # Tools are already extracted and converted in construct_tau2_env
-        return env.tools
-    except ImportError:
-        logger.warning("tau2 not installed - training without tool definitions in prompts")
-        return None
+    # Tools are already extracted and converted in construct_tau2_env
+    return env.tools
 
 
 def _normalize_tau2_messages(messages: list[dict]) -> list[dict]:

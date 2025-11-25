@@ -9,6 +9,7 @@ python -m tinker_cookbook.recipes.taubench.train
 from tinker_cookbook.recipes.taubench import tau2_logging_config
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import chz
@@ -81,6 +82,15 @@ def build_config(cli_config: CLIConfig) -> train.Config:
     )
 
 
+async def async_main(config: train.Config):
+    """Async wrapper that sets thread pool size before training."""
+    # Increase thread pool for parallel env creation/stepping
+    # Default is min(32, cpu_count+4) which may be too small for batch_size * group_size
+    loop = asyncio.get_running_loop()
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=64))
+    await train.main(config)
+
+
 def main():
     cli_config = chz.entrypoint(CLIConfig)
     config = build_config(cli_config)
@@ -88,7 +98,7 @@ def main():
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
     # Setup tau2 logging after log directory is validated
     tau2_logging_config.setup_tau2_logging()
-    asyncio.run(train.main(config))
+    asyncio.run(async_main(config))
 
 
 if __name__ == "__main__":
