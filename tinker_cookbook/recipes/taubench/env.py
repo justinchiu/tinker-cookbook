@@ -32,10 +32,9 @@ class Tau2Env(Env):
 
         self.env = AgentGymEnv(
             domain=domain,
-            task_id=task_id
-            # Use default user_llm (GPT-4) for now
-            # user_llm="gpt-5-nano",  # This model returns empty responses
-            # user_llm_args={"temperature": 1, "max_tokens": 1024}
+            task_id=task_id,
+            user_llm="claude-sonnet-4-5-20250929",
+            user_llm_args={"temperature": 0.0, "max_tokens": 1024}
         )
         # Note: reset() is synchronous and may block, but we can't make __init__ async
         # For now, we'll leave this as-is since it only happens once per env
