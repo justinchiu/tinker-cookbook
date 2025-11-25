@@ -648,14 +648,14 @@ class Qwen3InstructRenderer(Qwen3Renderer):
         ac_content = message["content"]
         # Observation (prompt) part
         if "tool_calls" in message and message["tool_calls"] is not None:
-            ac_content += "\n".join(
+            ac_content += "\n" + "\n".join(
                 [
                     f"<tool_call>\n{json.dumps(tool_call)}\n</tool_call>"
                     for tool_call in message["tool_calls"]
                 ]
             )
         if message["role"] == "tool":
-            ac_content = f"<tool_response>{ac_content}</tool_response>"
+            ac_content = f"<tool_response>\n{ac_content}\n</tool_response>"
         ac_content += "<|im_end|>"
         # Action part
         ac_tail_str = ""  # No action tail needed for Qwen format

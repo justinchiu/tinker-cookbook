@@ -221,7 +221,7 @@ def test_qwen3_tool_calling():
     print("-" * 80)
     messages_1 = [
         {"role": "user", "content": "What's the weather?"},
-        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": '{"location": "SF"}'}]},
+        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}]},
         {"role": "tool", "content": "Temperature is 72F"},
         {"role": "assistant", "content": "It's 72F in SF"},
         {"role": "user", "content": "Thanks"},
@@ -242,7 +242,7 @@ def test_qwen3_tool_calling():
     print("-" * 80)
     messages_2 = [
         {"role": "user", "content": "Check both"},
-        {"role": "assistant", "content": "Checking", "tool_calls": [{"name": "tool1", "arguments": '{}'}, {"name": "tool2", "arguments": '{}'}]},
+        {"role": "assistant", "content": "Checking", "tool_calls": [{"name": "tool1", "arguments": {}}, {"name": "tool2", "arguments": {}}]},
         {"role": "tool", "content": "Result 1"},
         {"role": "tool", "content": "Result 2"},
         {"role": "assistant", "content": "Both done"},
@@ -264,7 +264,7 @@ def test_qwen3_tool_calling():
     print("-" * 80)
     messages_3 = [
         {"role": "user", "content": "What's the weather?"},
-        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": '{"location": "SF"}'}]},
+        {"role": "assistant", "content": "Let me check", "tool_calls": [{"name": "get_weather", "arguments": {"location": "SF"}}]},
         {"role": "tool", "content": "Temperature is 72F"},
         {"role": "user", "content": "Thanks"},
     ]
