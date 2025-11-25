@@ -29,7 +29,7 @@
 
 # Default values
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen3-30B-A3B-Instruct-2507}"
-DOMAIN="${DOMAIN:-all}"  # Default to training on ALL domains
+DOMAIN="${DOMAIN:-retail}"  # Default to retail domain
 CHECKPOINT="${CHECKPOINT:-}"  # Optional checkpoint to continue from
 
 # Create filesystem-safe model name (replace / with -)

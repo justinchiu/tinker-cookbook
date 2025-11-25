@@ -9,6 +9,7 @@ import logging
 import sys
 
 import chz
+import tau2.registry as reg
 import tinker
 from tinker_cookbook.completers import TinkerTokenCompleter
 from tinker_cookbook.recipes.taubench.env import construct_tau2_env
@@ -21,8 +22,8 @@ logger = logging.getLogger(__name__)
 class Config:
     """Configuration for demo rollout."""
     model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-    domain: str = "telecom"
-    task_id: str = "[mobile_data_issue]airplane_mode_on|data_mode_off[PERSONA:None]"
+    domain: str = "retail"
+    task_id: str | None = None  # Will pick first task from domain if not specified
     checkpoint_path: str | None = None  # Optional checkpoint to load from
     lora_rank: int = 32
     max_tokens: int = 512
@@ -37,9 +38,16 @@ async def test_taubench_sampling(config: Config):
     print("TAUBENCH ENVIRONMENT SAMPLING TEST")
     print("=" * 80)
 
+    # Get task_id from registry if not specified
+    task_id = config.task_id
+    if task_id is None:
+        tasks = reg.registry.get_tasks_loader(config.domain)()
+        task_id = tasks[0].id
+        print(f"No task_id specified, using first task: {task_id}")
+
     print(f"\nModel: {config.model_name}")
     print(f"Domain: {config.domain}")
-    print(f"Task ID: {config.task_id}")
+    print(f"Task ID: {task_id}")
     if config.checkpoint_path:
         print(f"Checkpoint: {config.checkpoint_path}")
 
@@ -47,7 +55,7 @@ async def test_taubench_sampling(config: Config):
     print("\n" + "-" * 80)
     print("Creating Tau2 environment...")
     print("-" * 80)
-    env = construct_tau2_env(domain=config.domain, task_id=config.task_id, model_name=config.model_name)
+    env = construct_tau2_env(domain=config.domain, task_id=task_id, model_name=config.model_name)
 
     print("\nInitial messages in env:")
     for i, msg in enumerate(env.messages):

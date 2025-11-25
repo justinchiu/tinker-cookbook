@@ -32,7 +32,7 @@ class CLIConfig:
     wandb_project: str | None = None
     wandb_name: str | None = None
     log_path: str | None = None
-    domain: str = "telecom"
+    domain: str = "retail"
     test_group_size: int = 1  # Much smaller samples for evaluations
     load_checkpoint_path: str | None = None  # Resume from checkpoint (e.g., tinker://...)
     eval_temperature: float = 0.0  # Greedy decoding for evaluation

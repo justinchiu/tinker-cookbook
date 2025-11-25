@@ -190,13 +190,19 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     actual_domain: str = None  # The real domain for when domain="all"
 
     async def make_envs(self) -> Sequence[Env]:
-        """Create a group of tau2 environments with the same task."""
+        """Create a group of tau2 environments with the same task.
+
+        Uses asyncio.to_thread to create envs in parallel since Tau2Env.__init__
+        blocks (it calls AgentGymEnv.reset() which starts a thread and waits).
+        """
         # Use actual_domain if provided (for domain="all"), otherwise use domain
         env_domain = self.actual_domain or self.domain
-        return [
-            Tau2Env(self.renderer, env_domain, self.task_id)
+
+        # Create envs in parallel using thread pool to avoid blocking the event loop
+        return list(await asyncio.gather(*[
+            asyncio.to_thread(Tau2Env, self.renderer, env_domain, self.task_id)
             for _ in range(self.num_envs)
-        ]
+        ]))
 
     def logging_tags(self) -> list[str]:
         """Return tags for logging/aggregation."""
