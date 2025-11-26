@@ -18,6 +18,7 @@ from datetime import datetime
 
 import chz
 from tinker_cookbook import cli_utils, model_info
+from tinker_cookbook.recipes.taubench.env import build_tau_eval_builders
 from tinker_cookbook.recipes.taubench.sft_dataset import (
     Tau2SimulationFilesBuilder,
 )
@@ -52,6 +53,17 @@ class CLIConfig:
     infrequent_eval_every: int = 100
     load_checkpoint_path: str | None = None
 
+    # Tau2 rollout evaluation parameters
+    enable_tau_eval: bool = True
+    eval_domain: str = "telecom"
+    eval_num_tasks: int | None = 3
+    eval_group_size: int = 1
+    eval_batch_size: int = 3
+    eval_max_tokens: int = 768
+    eval_temperature: float = 0.0
+    eval_task_seed: int = 0
+    eval_name: str = "tau2_rollout"
+
     # Infrastructure
     base_url: str | None = None
 
@@ -70,6 +82,9 @@ def main():
         "/home/ubuntu/code/tau2-bench/data/simulations/2025-11-22T13:36:02.147814_telecom_llm_agent_claude-sonnet-4-5-20250929_user_simulator_gpt-4.1.json",
         "/home/ubuntu/code/tau2-bench/data/simulations/2025-11-22T22:11:21.085044_airline_llm_agent_claude-sonnet-4-5-20250929_user_simulator_gpt-4.1.json",
         "/home/ubuntu/code/tau2-bench/data/simulations/2025-11-22T22:11:36.713728_retail_llm_agent_claude-sonnet-4-5-20250929_user_simulator_gpt-4.1.json",
+        "/home/ubuntu/code/tinker-cookbook/data/tau2_rollouts_sonnet/airline_16trials_sonnet45.json",
+        "/home/ubuntu/code/tinker-cookbook/data/tau2_rollouts_sonnet/retail_16trials_sonnet45.json",
+        "/home/ubuntu/code/tinker-cookbook/data/tau2_rollouts_sonnet/telecom_16trials_sonnet45.json",
     ]
 
     # Build config
@@ -81,7 +96,7 @@ def main():
     if cli_config.log_path is not None:
         log_path = cli_config.log_path
     else:
-        log_path = f"/tmp/tinker-examples/tau2-sft/{run_name}"
+        log_path = f"logs/tinker-examples/tau2-sft/{run_name}"
 
     if cli_config.wandb_name is not None:
         wandb_name = cli_config.wandb_name
@@ -110,13 +125,27 @@ def main():
         test_split=cli_config.test_split,
     )
 
+    tau_eval_builders = build_tau_eval_builders(
+        enabled=cli_config.enable_tau_eval,
+        model_name=cli_config.model_name,
+        renderer_name=renderer_name,
+        domain=cli_config.eval_domain,
+        num_tasks=cli_config.eval_num_tasks,
+        batch_size=cli_config.eval_batch_size,
+        group_size=cli_config.eval_group_size,
+        max_tokens=cli_config.eval_max_tokens,
+        temperature=cli_config.eval_temperature,
+        task_seed=cli_config.eval_task_seed,
+        eval_name=cli_config.eval_name,
+    )
+
     # Build training config
     config = train.Config(
         log_path=log_path,
         model_name=cli_config.model_name,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         dataset_builder=dataset_builder,
-        evaluator_builders=[],
+        evaluator_builders=tau_eval_builders,
         infrequent_evaluator_builders=[],
         learning_rate=cli_config.learning_rate,
         lr_schedule=cli_config.lr_schedule,

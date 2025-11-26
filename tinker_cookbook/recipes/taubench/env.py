@@ -11,11 +11,15 @@ import os
 litellm_logger = logging.getLogger("LiteLLM")
 litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors
 
+logger = logging.getLogger(__name__)
+
 from tinker import ModelInput
 from tinker_cookbook.completers import StopCondition
+from tinker_cookbook.eval.evaluators import EvaluatorBuilder
 from tinker_cookbook.renderers import Message, Renderer, get_renderer
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.model_info import get_recommended_renderer_name
+from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -30,10 +34,12 @@ class Tau2Env(Env):
         self.domain = domain
         self.task_id = task_id
 
+        # Keeping the old Sonnet ID here for reference in case Tau2 toggles back:
+        # user_llm="claude-sonnet-4-5-20250929"
         self.env = AgentGymEnv(
             domain=domain,
             task_id=task_id,
-            user_llm="claude-sonnet-4-5-20250929",
+            user_llm="gpt-4.1-2025-04-14",
             user_llm_args={"temperature": 0.0, "max_tokens": 1024}
         )
         # Note: reset() is synchronous and may block, but we can't make __init__ async
@@ -289,76 +295,142 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         return train_dataset, test_dataset
 
     def _get_train_and_test_tasks(self):
-        """Get tasks for the specified domain, split for train/test."""
-        # Handle "all" domain to load tasks from all available domains
+        """Get tasks for the specified domain, honoring official train/test splits."""
+
+        TRAIN_SPLIT = "train"
+        TEST_SPLIT = "test"
+
+        def load_tasks_for_domain(domain_name: str, split_name: str | None) -> list:
+            tasks_loader = reg.registry.get_tasks_loader(domain_name)
+            if split_name is None:
+                tasks = tasks_loader()
+            else:
+                try:
+                    tasks = tasks_loader(task_split_name=split_name)
+                except TypeError:
+                    logger.warning(
+                        "Domain %s does not support split '%s'; using default set",
+                        domain_name,
+                        split_name,
+                    )
+                    tasks = tasks_loader()
+                except ValueError as exc:
+                    logger.warning(
+                        "Domain %s missing split '%s' (%s); falling back to base",
+                        domain_name,
+                        split_name,
+                        exc,
+                    )
+                    tasks = tasks_loader()
+
+            for task in tasks:
+                setattr(task, "_actual_domain", domain_name)
+            return tasks
+
         if self.domain == "all":
-            all_tasks = []
-            domains = ["telecom", "airline", "retail", "telecom-workflow"]  # Exclude mock by default
-
-            for domain in domains:
-                tasks_loader = reg.registry.get_tasks_loader(domain)
-                domain_tasks = tasks_loader()
-                # Wrap tasks with domain info for "all" mode
-                for task in domain_tasks:
-                    # Store the actual domain with the task
-                    task._actual_domain = domain
-                all_tasks.extend(domain_tasks)  # Always use ALL tasks
+            domains = ["telecom", "airline", "retail", "telecom-workflow"]
         else:
-            # Single domain - use the registry's task loader directly
-            tasks_loader = reg.registry.get_tasks_loader(self.domain)
-            all_tasks = tasks_loader()  # Always use ALL tasks
-            # Mark tasks with their domain for consistency
-            for task in all_tasks:
-                task._actual_domain = self.domain
+            domains = [self.domain]
 
-        # Shuffle all tasks before splitting (seeded permutation)
+        train_tasks: list = []
+        test_tasks: list = []
+        for domain_name in domains:
+            train_tasks.extend(load_tasks_for_domain(domain_name, TRAIN_SPLIT))
+            test_tasks.extend(load_tasks_for_domain(domain_name, TEST_SPLIT))
+
         import random
-        random.Random(self.seed).shuffle(all_tasks)
 
-        # Use all tasks for both train and test (no split)
-        test_tasks = all_tasks
-        train_tasks = all_tasks
+        rng = random.Random(self.seed)
+        rng.shuffle(train_tasks)
+        rng.shuffle(test_tasks)
 
-        # Log the task ID split for debugging
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.info("="*60)
+        logger.info("=" * 60)
         if self.domain == "all":
-            logger.info(f"TAU2 MULTI-DOMAIN DATASET - telecom, airline, retail (ALL TASKS)")
-            # Count tasks by domain
-            from collections import defaultdict
-            domain_counts = defaultdict(int)
-            for task in all_tasks:
-                # Extract domain from task ID (format: domain_category_scenario)
-                domain_prefix = task.id.split('_')[0] if '_' in task.id else "unknown"
-                if domain_prefix in ["mobile", "service", "roaming", "bill", "internet", "mms"]:
-                    domain_counts["telecom"] += 1
-                elif domain_prefix in ["flight", "baggage", "seat", "booking", "meal"]:
-                    domain_counts["airline"] += 1
-                elif domain_prefix in ["return", "order", "product", "shipping", "payment"]:
-                    domain_counts["retail"] += 1
-                else:
-                    domain_counts["other"] += 1
-
-            logger.info(f"Task distribution across domains:")
-            for domain, count in sorted(domain_counts.items()):
-                logger.info(f"  {domain}: {count} tasks")
+            logger.info("TAU2 MULTI-DOMAIN DATASET (train split=train, test split=test)")
         else:
-            logger.info(f"TAU2 DATASET - {self.domain} domain (ALL TASKS)")
+            logger.info(
+                "TAU2 DATASET - %s domain (train split=train, test split=test)",
+                self.domain,
+            )
 
-        logger.info("="*60)
-        logger.info(f"TEST TASKS ({len(test_tasks)} tasks for evaluation):")
-        for task in test_tasks:
-            logger.info(f"  TEST: {task.id}")
+        logger.info("TEST TASKS (%d tasks for evaluation):", len(test_tasks))
+        for task in test_tasks[:5]:
+            logger.info("  TEST: %s", task.id)
+        if len(test_tasks) > 5:
+            logger.info("  ... and %d more test tasks", len(test_tasks) - 5)
 
-        logger.info(f"TRAIN TASKS ({len(train_tasks)} tasks for training):")
-        for i, task in enumerate(train_tasks):
-            if i < 5:  # Show first 5 to avoid spam
-                logger.info(f"  TRAIN: {task.id}")
-            elif i == 5:
-                logger.info(f"  ... and {len(train_tasks) - 5} more train tasks")
-                break
-        logger.info("="*60)
+        logger.info("TRAIN TASKS (%d tasks for training):", len(train_tasks))
+        for task in train_tasks[:5]:
+            logger.info("  TRAIN: %s", task.id)
+        if len(train_tasks) > 5:
+            logger.info("  ... and %d more train tasks", len(train_tasks) - 5)
+        logger.info("=" * 60)
 
         return train_tasks, test_tasks
+
+
+def build_tau_eval_builders(
+    *,
+    enabled: bool,
+    model_name: str,
+    renderer_name: str,
+    domain: str,
+    num_tasks: int | None,
+    batch_size: int,
+    group_size: int,
+    max_tokens: int,
+    temperature: float,
+    task_seed: int,
+    eval_name: str,
+) -> list[EvaluatorBuilder]:
+    """Construct Tau2 rollout evaluators for supervised recipes."""
+
+    if not enabled:
+        return []
+
+    eval_dataset_builder = Tau2DatasetBuilder(
+        batch_size=max(1, batch_size),
+        model_name_for_tokenizer=model_name,
+        renderer_name=renderer_name,
+        group_size=max(1, group_size),
+        domain=domain,
+        seed=task_seed,
+        test_group_size=max(1, group_size),
+        num_epochs=1,
+    )
+
+    # Build datasets ahead of time so evaluator builders stay lightweight at runtime
+    _, raw_test_dataset = asyncio.run(eval_dataset_builder())
+    tasks = list(raw_test_dataset.tasks)
+    if num_tasks is not None:
+        tasks = tasks[: max(1, num_tasks)]
+
+    if not tasks:
+        raise ValueError("Tau2 evaluation enabled but no tasks were loaded.")
+
+    eval_dataset = Tau2Dataset(
+        tasks=tasks,
+        renderer=raw_test_dataset.renderer,
+        domain=raw_test_dataset.domain,
+        batch_size=min(len(tasks), max(1, batch_size)),
+        group_size=max(1, group_size),
+    )
+
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Enabling Tau2 rollout eval '%s' on %d tasks (domain=%s, group_size=%d)",
+        eval_name,
+        len(tasks),
+        domain,
+        group_size,
+    )
+
+    def builder() -> RLTestSetEvaluator:
+        return RLTestSetEvaluator(
+            dataset=eval_dataset,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            name=eval_name,
+        )
+
+    return [builder]
