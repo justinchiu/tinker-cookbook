@@ -38,19 +38,18 @@ class CLIConfig:
     learning_rate: float = 3e-5
     lr_schedule: str = "cosine_warmup"
     num_epochs: int = 3
-    batch_size: int = 8
-    max_length: int | None = 4096  # Tau2 conversations can be long
+    batch_size: int = 64
+    max_length: int | None = 32768  # Tau2 conversations can be long
 
     # Training behavior
     train_on_what: TrainOnWhat = TrainOnWhat.ALL_ASSISTANT_MESSAGES
-    test_split: float = 0.1  # Fraction of data for test set
 
     # Checkpointing and evaluation
-    # With ~278 conversations, batch_size=8 → ~31 batches/epoch
-    # save_every=31 saves once per epoch
-    save_every: int = 31  # Save after each epoch
-    eval_every: int = 31  # Eval after each epoch
-    infrequent_eval_every: int = 100
+    # With ~2,940 conversations (≈2,646 train after official + fallback splits) and batch_size=64 → ~41 batches/epoch
+    # save_every=41 saves once per epoch
+    save_every: int = 20  # Save after each epoch
+    eval_every: int = 20  # Eval after each epoch
+    infrequent_eval_every: int = 41
     load_checkpoint_path: str | None = None
 
     # Tau2 rollout evaluation parameters
@@ -59,7 +58,7 @@ class CLIConfig:
     eval_num_tasks: int | None = 3
     eval_group_size: int = 1
     eval_batch_size: int = 3
-    eval_max_tokens: int = 768
+    eval_max_tokens: int = 32768
     eval_temperature: float = 0.0
     eval_task_seed: int = 0
     eval_name: str = "tau2_rollout"
@@ -78,6 +77,7 @@ def main():
     cli_config = chz.entrypoint(CLIConfig)
 
     # Default simulation files (telecom, airline, retail)
+    # Combined, these currently contain 2,940 multi-turn conversations.
     SIMULATION_FILES = [
         "/home/ubuntu/code/tau2-bench/data/simulations/2025-11-22T13:36:02.147814_telecom_llm_agent_claude-sonnet-4-5-20250929_user_simulator_gpt-4.1.json",
         "/home/ubuntu/code/tau2-bench/data/simulations/2025-11-22T22:11:21.085044_airline_llm_agent_claude-sonnet-4-5-20250929_user_simulator_gpt-4.1.json",
@@ -122,7 +122,6 @@ def main():
     dataset_builder = Tau2SimulationFilesBuilder(
         common_config=common_config,
         simulation_files=SIMULATION_FILES,
-        test_split=cli_config.test_split,
     )
 
     tau_eval_builders = build_tau_eval_builders(

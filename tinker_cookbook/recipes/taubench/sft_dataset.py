@@ -6,6 +6,7 @@ import chz
 import json
 import logging
 import random
+from collections import defaultdict
 from pathlib import Path
 from typing import cast
 
@@ -18,6 +19,78 @@ from tinker_cookbook.supervised.common import datum_from_tokens_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
 
 logger = logging.getLogger(__name__)
+
+_TASK_SPLIT_CACHE: dict[tuple[str, str], set[str]] = {}
+
+
+def _get_task_ids_for_split(domain: str, split_name: str) -> set[str]:
+    key = (domain, split_name)
+    if key in _TASK_SPLIT_CACHE:
+        return _TASK_SPLIT_CACHE[key]
+
+    try:
+        split_loader = reg.registry.get_task_splits_loader(domain)
+    except KeyError:
+        logger.warning("No task split loader registered for domain '%s'", domain)
+        task_ids: set[str] = set()
+    else:
+        task_ids = set()
+        if split_loader is not None:
+            splits = split_loader()
+            task_ids = set(splits.get(split_name, []))
+        else:
+            logger.warning("Domain '%s' does not expose task splits", domain)
+
+    _TASK_SPLIT_CACHE[key] = task_ids
+    return task_ids
+
+
+def _split_datums_by_tasks(
+    datums_with_tasks: list[tuple[tinker.Datum, str]],
+    domain: str,
+    use_official_test_split: bool,
+    fallback_test_fraction: float | None,
+) -> tuple[list[tinker.Datum], list[tinker.Datum]]:
+    """Split datums into train/test, preferring official TauBench task splits."""
+
+    if use_official_test_split:
+        test_ids = _get_task_ids_for_split(domain, "test")
+        if test_ids:
+            test_data = [datum for datum, task_id in datums_with_tasks if task_id in test_ids]
+            train_data = [datum for datum, task_id in datums_with_tasks if task_id not in test_ids]
+            logger.info(
+                "Domain '%s': %d datums mapped to official test split", domain, len(test_data)
+            )
+            return train_data, test_data
+        else:
+            logger.warning(
+                "Domain '%s' lacks an official test split; falling back to %.0f%% random split",
+                domain,
+                (fallback_test_fraction or 0.0) * 100,
+            )
+
+    if fallback_test_fraction and fallback_test_fraction > 0:
+        rng = random.Random(0)
+        shuffled = datums_with_tasks.copy()
+        rng.shuffle(shuffled)
+        num_test = max(1, int(len(shuffled) * fallback_test_fraction)) if shuffled else 0
+        test_data = [datum for datum, _ in shuffled[:num_test]]
+        train_data = [datum for datum, _ in shuffled[num_test:]]
+        logger.info(
+            "Domain '%s': using fallback %.0f%% test split → %d test / %d train",
+            domain,
+            fallback_test_fraction * 100,
+            len(test_data),
+            len(train_data),
+        )
+        return train_data, test_data
+
+    logger.info(
+        "Domain '%s': assigning all %d datums to train (no test split configured)",
+        domain,
+        len(datums_with_tasks),
+    )
+    return [datum for datum, _ in datums_with_tasks], []
 
 
 class SimpleSupervisedDataset(SupervisedDataset):
@@ -132,7 +205,6 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
     """
 
     simulation_file: str  # Path to simulation JSON file
-    test_split: float = 0.1  # Fraction of data to use for test
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
         # Load simulation file
@@ -154,7 +226,7 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
             else TrainOnWhat.ALL_ASSISTANT_MESSAGES
         )
 
-        datums = []
+        datums_with_tasks: list[tuple[tinker.Datum, str]] = []
         for sim in data['simulations']:
             messages = sim['messages']
             if messages:  # Skip empty conversations
@@ -167,21 +239,23 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
                     tools=tools
                 )
                 datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
-                datums.append(datum)
+                datums_with_tasks.append((datum, sim['task_id']))
 
-        logger.info(f"Loaded {len(datums)} conversations from {self.simulation_file}")
+        logger.info(f"Loaded {len(datums_with_tasks)} conversations from {self.simulation_file}")
 
-        # Shuffle with seed 0
-        rng = random.Random(0)
-        rng.shuffle(datums)
+        train_data, test_data = _split_datums_by_tasks(
+            datums_with_tasks,
+            domain,
+            True,
+            None,
+        )
 
-        # Split into train and test
-        num_test = int(len(datums) * self.test_split)
-        num_test = max(1, num_test)  # At least 1 test example
-        test_data = datums[:num_test]
-        train_data = datums[num_test:]
-
-        logger.info(f"Train: {len(train_data)} examples, Test: {len(test_data)} examples")
+        logger.info(
+            "Domain '%s': Train=%d examples, Test=%d examples",
+            domain,
+            len(train_data),
+            len(test_data),
+        )
 
         return SimpleSupervisedDataset(
             train_data, batch_size=self.common_config.batch_size
@@ -199,7 +273,6 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
     """
 
     simulation_dir: str  # Path to directory containing simulation JSON files
-    test_split: float = 0.1  # Fraction of data to use for test
     pattern: str = "*.json"  # Glob pattern for files to load
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
@@ -230,7 +303,7 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
             else TrainOnWhat.ALL_ASSISTANT_MESSAGES
         )
 
-        datums = []
+        datums_with_tasks: list[tuple[tinker.Datum, str]] = []
         for sim_file in sim_files:
             with open(sim_file, 'r') as f:
                 data = json.load(f)
@@ -252,21 +325,23 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
                         tools=tools
                     )
                     datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
-                    datums.append(datum)
+                    datums_with_tasks.append((datum, sim['task_id']))
 
-        logger.info(f"Loaded {len(datums)} conversations from {len(sim_files)} files")
+        logger.info(f"Loaded {len(datums_with_tasks)} conversations from {len(sim_files)} files")
 
-        # Shuffle with seed 0
-        rng = random.Random(0)
-        rng.shuffle(datums)
+        train_data, test_data = _split_datums_by_tasks(
+            datums_with_tasks,
+            domain or "unknown",
+            True,
+            None,
+        )
 
-        # Split into train and test
-        num_test = int(len(datums) * self.test_split)
-        num_test = max(1, num_test)  # At least 1 test example
-        test_data = datums[:num_test]
-        train_data = datums[num_test:]
-
-        logger.info(f"Train: {len(train_data)} examples, Test: {len(test_data)} examples")
+        logger.info(
+            "Domain '%s': Train=%d examples, Test=%d examples",
+            domain,
+            len(train_data),
+            len(test_data),
+        )
 
         return SimpleSupervisedDataset(
             train_data, batch_size=self.common_config.batch_size
@@ -284,24 +359,8 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
     """
 
     simulation_files: list[str]  # List of paths to simulation JSON files
-    test_split: float | None = None  # Fraction of data to use for test (if test_size not set)
-    test_size_per_domain: int = 5  # Number of examples from each domain for test
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
-        # Load tools from the first file's domain
-        # (assuming all files use compatible tool sets)
-        domain = None
-        tools = None
-        if self.simulation_files:
-            with open(self.simulation_files[0], 'r') as f:
-                data = json.load(f)
-            domain = data['info']['environment_info']['domain_name']
-            tools = _get_tau2_tools(domain)
-            if tools:
-                logger.info(f"Loaded {len(tools)} tool definitions for domain '{domain}'")
-            else:
-                logger.warning(f"No tools available for domain '{domain}' - training without tool definitions")
-
         # Extract, normalize, and convert to Datum objects immediately
         train_on_what = (
             TrainOnWhat(self.common_config.train_on_what)
@@ -309,15 +368,28 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
             else TrainOnWhat.ALL_ASSISTANT_MESSAGES
         )
 
-        datums = []
-        domain_counts = {}
+        datums_by_domain: dict[str, list[tuple[tinker.Datum, str]]] = defaultdict(list)
+        domain_counts: dict[str, int] = defaultdict(int)
+        domain_tools: dict[str, list[dict] | None] = {}
         for sim_file in self.simulation_files:
             with open(sim_file, 'r') as f:
                 data = json.load(f)
 
             # Track domain for logging
             file_domain = data['info']['environment_info']['domain_name']
-            domain_counts[file_domain] = domain_counts.get(file_domain, 0)
+            if file_domain not in domain_tools:
+                domain_tools[file_domain] = _get_tau2_tools(file_domain)
+                if domain_tools[file_domain]:
+                    logger.info(
+                        "Loaded %d tool definitions for domain '%s'",
+                        len(domain_tools[file_domain]),
+                        file_domain,
+                    )
+                else:
+                    logger.warning(
+                        "No tools available for domain '%s' - training without tool definitions",
+                        file_domain,
+                    )
 
             for sim in data['simulations']:
                 messages = sim['messages']
@@ -328,26 +400,33 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                     tokens, weights = self.renderer.build_supervised_example(
                         normalized,
                         train_on_what=train_on_what,
-                        tools=tools
+                        tools=domain_tools[file_domain]
                     )
                     datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
-                    datums.append(datum)
+                    datums_by_domain[file_domain].append((datum, sim['task_id']))
                     domain_counts[file_domain] += 1
 
-        logger.info(f"Loaded {len(datums)} conversations from {len(self.simulation_files)} files")
-        logger.info(f"Domain distribution: {domain_counts}")
+        total_datums = sum(domain_counts.values())
+        logger.info(f"Loaded {total_datums} conversations from {len(self.simulation_files)} files")
+        logger.info(f"Domain distribution: {dict(domain_counts)}")
 
-        # Shuffle with seed 0
-        rng = random.Random(0)
-        rng.shuffle(datums)
+        train_data: list[tinker.Datum] = []
+        test_data: list[tinker.Datum] = []
+        for domain_name, datums_with_tasks in datums_by_domain.items():
+            domain_train, domain_test = _split_datums_by_tasks(
+                datums_with_tasks,
+                domain_name,
+                True,
+                None,
+            )
+            train_data.extend(domain_train)
+            test_data.extend(domain_test)
 
-        # Split into train and test
-        num_test = int(len(datums) * self.test_split)
-        num_test = max(1, num_test)  # At least 1 test example
-        test_data = datums[:num_test]
-        train_data = datums[num_test:]
-
-        logger.info(f"Train: {len(train_data)} examples, Test: {len(test_data)} examples")
+        logger.info(
+            "Combined domains: Train=%d examples, Test=%d examples",
+            len(train_data),
+            len(test_data),
+        )
 
         return SimpleSupervisedDataset(
             train_data, batch_size=self.common_config.batch_size
