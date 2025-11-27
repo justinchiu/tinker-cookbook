@@ -55,7 +55,7 @@ class CLIConfig:
 
     # Tau2 rollout evaluation parameters
     enable_tau_eval: bool = True
-    eval_domain: str = "telecom"
+    eval_domain: str = "retail"
     eval_num_tasks: int | None = None
     eval_group_size: int = 1
     eval_batch_size: int = 3
