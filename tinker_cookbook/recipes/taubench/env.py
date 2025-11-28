@@ -29,10 +29,12 @@ from tinker_cookbook.rl.types import (
 
 
 class Tau2Env(Env):
-    def __init__(self, renderer: Renderer, domain: str, task_id: str):
+    def __init__(self, renderer: Renderer, domain: str, task_id: str, max_context_length: int | None = None):
         self.renderer = renderer
         self.domain = domain
         self.task_id = task_id
+        self.max_context_length = max_context_length
+        self._context_exceeded = False
 
         # Keeping the old Sonnet ID here for reference in case Tau2 toggles back:
         # user_llm="claude-sonnet-4-5-20250929"
@@ -150,11 +152,24 @@ class Tau2Env(Env):
         # Build next observation with tools injected - always provide it (like twenty_questions)
         next_obs = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
 
+        # Check if context length exceeded
+        episode_done = terminated or truncated
+        if self.max_context_length is not None and next_obs.length > self.max_context_length:
+            logger.warning(
+                "Context length %d exceeded max %d for task %s, terminating episode with reward=0",
+                next_obs.length,
+                self.max_context_length,
+                self.task_id,
+            )
+            self._context_exceeded = True
+            episode_done = True
+            reward = 0.0
+
         # Return step result
         return StepResult(
             next_observation=next_obs,
             next_stop_condition=self.stop_condition,  # Always provide stop condition
-            episode_done=(terminated or truncated),
+            episode_done=episode_done,
             reward=reward,
         )
 
@@ -193,6 +208,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     renderer: renderers.Renderer
     num_envs: int
     actual_domain: str = None  # The real domain for when domain="all"
+    max_context_length: int | None = None  # Max context length before failing episode
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task.
@@ -205,7 +221,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
 
         # Create envs in parallel using thread pool to avoid blocking the event loop
         return list(await asyncio.gather(*[
-            asyncio.to_thread(Tau2Env, self.renderer, env_domain, self.task_id)
+            asyncio.to_thread(Tau2Env, self.renderer, env_domain, self.task_id, self.max_context_length)
             for _ in range(self.num_envs)
         ]))
 
@@ -223,6 +239,7 @@ class Tau2Dataset(RLDataset):
     domain: str
     batch_size: int
     group_size: int
+    max_context_length: int | None = None  # Max context length before failing episode
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -235,7 +252,8 @@ class Tau2Dataset(RLDataset):
                 task_id=task.id,
                 renderer=self.renderer,
                 num_envs=self.group_size,
-                actual_domain=getattr(task, '_actual_domain', None)  # Pass the actual domain if available
+                actual_domain=getattr(task, '_actual_domain', None),  # Pass the actual domain if available
+                max_context_length=self.max_context_length,
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -382,6 +400,7 @@ def build_tau_eval_builders(
     temperature: float,
     task_seed: int,
     eval_name: str,
+    max_context_length: int | None = None,
 ) -> list[EvaluatorBuilder]:
     """Construct Tau2 rollout evaluators for supervised recipes."""
 
@@ -414,6 +433,7 @@ def build_tau_eval_builders(
         domain=raw_test_dataset.domain,
         batch_size=min(len(tasks), max(1, batch_size)),
         group_size=max(1, group_size),
+        max_context_length=max_context_length,
     )
 
     logger = logging.getLogger(__name__)

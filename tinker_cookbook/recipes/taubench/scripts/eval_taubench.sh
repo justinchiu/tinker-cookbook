@@ -11,9 +11,9 @@ TASK_SPLIT_NAME=${TASK_SPLIT_NAME:-test}
 DOMAIN="retail"
 
 declare -a AGENT_USER_PAIRS=(
-    "claude-sonnet-4-5-20250929:claude-sonnet-4-5-20250929"
-    "gpt-4.1-2025-04-14:claude-sonnet-4-5-20250929"
-    "claude-opus-4-5-20250929:claude-opus-4-5-20250929"
+    "anthropic/claude-sonnet-4-5-20250929:anthropic/claude-sonnet-4-5-20250929"
+    "openai/gpt-4.1-2025-04-14:anthropic/claude-sonnet-4-5-20250929"
+    "anthropic/claude-opus-4-5-20250929:anthropic/claude-opus-4-5-20250929"
 )
 
 echo "=== Collecting Tau2 rollouts for model pairs ==="

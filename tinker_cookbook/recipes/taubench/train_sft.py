@@ -63,6 +63,7 @@ class CLIConfig:
     eval_temperature: float = 0.0
     eval_task_seed: int = 0
     eval_name: str = "tau2_rollout"
+    eval_max_context_length: int | None = 8192  # Fail episode if context exceeds this
 
     # Infrastructure
     base_url: str | None = None
@@ -137,6 +138,7 @@ def main():
         temperature=cli_config.eval_temperature,
         task_seed=cli_config.eval_task_seed,
         eval_name=cli_config.eval_name,
+        max_context_length=cli_config.eval_max_context_length,
     )
 
     # Build training config
