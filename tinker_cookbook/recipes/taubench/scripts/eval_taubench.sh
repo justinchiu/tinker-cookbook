@@ -4,16 +4,17 @@
 
 set -euo pipefail
 
-NUM_TRIALS=${1:-8}
+NUM_TRIALS=${1:-4}
 MAX_CONCURRENCY=${MAX_CONCURRENCY:-16}
 TEMPERATURE=${2:-0}
 TASK_SPLIT_NAME=${TASK_SPLIT_NAME:-test}
 DOMAIN="retail"
 
 declare -a AGENT_USER_PAIRS=(
-    "anthropic/claude-sonnet-4-5-20250929:anthropic/claude-sonnet-4-5-20250929"
-    "openai/gpt-4.1-2025-04-14:anthropic/claude-sonnet-4-5-20250929"
-    "anthropic/claude-opus-4-5-20250929:anthropic/claude-opus-4-5-20250929"
+    #"anthropic/claude-sonnet-4-5-20250929:anthropic/claude-sonnet-4-5-20250929"
+    #"openai/gpt-4.1-2025-04-14:anthropic/claude-sonnet-4-5-20250929"
+    #"anthropic/claude-opus-4-5-20250929:anthropic/claude-opus-4-5-20250929"
+    "anthropic/claude-sonnet-4-5-20250929:openai/gpt-4.1-2025-04-14"
 )
 
 echo "=== Collecting Tau2 rollouts for model pairs ==="
