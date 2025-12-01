@@ -8,7 +8,8 @@ NUM_TRIALS=${1:-4}
 MAX_CONCURRENCY=${MAX_CONCURRENCY:-16}
 TEMPERATURE=${2:-0}
 TASK_SPLIT_NAME=${TASK_SPLIT_NAME:-test}
-DOMAIN="retail"
+# DOMAIN="retail"
+DOMAIN="telecom"
 
 declare -a AGENT_USER_PAIRS=(
     #"anthropic/claude-sonnet-4-5-20250929:anthropic/claude-sonnet-4-5-20250929"
@@ -33,7 +34,7 @@ for pair in "${AGENT_USER_PAIRS[@]}"; do
     mkdir -p "$PAIR_DIR"
 
     echo "=== Domain $DOMAIN :: Agent $AGENT_LLM vs User $USER_LLM ==="
-    OUTPUT_FILE="${PAIR_DIR}/retail_${NUM_TRIALS}trials"
+    OUTPUT_FILE="${PAIR_DIR}/${DOMAIN}_${NUM_TRIALS}trials"
     uv run tau2 run \
         --domain "$DOMAIN" \
         --task-split-name "$TASK_SPLIT_NAME" \
