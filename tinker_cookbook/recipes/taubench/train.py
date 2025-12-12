@@ -37,6 +37,11 @@ class CLIConfig:
     test_group_size: int = 1  # Much smaller samples for evaluations
     load_checkpoint_path: str | None = None  # Resume from checkpoint (e.g., tinker://...)
     eval_temperature: float = 0.0  # Greedy decoding for evaluation
+    # External LLM (ask_sonnet) configuration
+    external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
+    ask_sonnet_penalty: float = 0.1  # Penalty per ask_sonnet call
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -64,6 +69,10 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         domain=cli_config.domain,
         test_group_size=cli_config.test_group_size,
         num_epochs=cli_config.num_epochs,
+        external_llm_model=cli_config.external_llm_model,
+        external_llm_temperature=cli_config.external_llm_temperature,
+        external_llm_max_tokens=cli_config.external_llm_max_tokens,
+        ask_sonnet_penalty=cli_config.ask_sonnet_penalty,
     )
 
     return train.Config(

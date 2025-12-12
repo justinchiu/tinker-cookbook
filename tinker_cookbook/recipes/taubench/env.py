@@ -74,6 +74,9 @@ class Tau2Env(Env):
         # This is needed because Anthropic requires tool_use_id to match tool_result
         self.external_llm_messages: list[dict] = []
 
+        # Track ask_sonnet calls for reward computation
+        self.ask_sonnet_call_count: int = 0
+
         # Keeping the old Sonnet ID here for reference in case Tau2 toggles back:
         # user_llm="claude-sonnet-4-5-20250929"
         self.env = AgentGymEnv(
@@ -204,6 +207,7 @@ class Tau2Env(Env):
             tool_call = assistant_message["tool_calls"][0]
             if tool_call.function.name == "ask_sonnet":
                 logger.info("ask_sonnet called, delegating to external LLM")
+                self.ask_sonnet_call_count += 1
 
                 # Call external LLM and use its response instead
                 assistant_message = await self._call_external_llm()
@@ -358,6 +362,8 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
+    # Penalty per ask_sonnet call (subtracted from reward)
+    ask_sonnet_penalty: float = 0.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task.
@@ -383,6 +389,29 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
             for _ in range(self.num_envs)
         ]))
 
+    async def compute_group_rewards(
+        self, trajectory_group: list, env_group: Sequence[Env]
+    ) -> list[tuple[float, dict]]:
+        """Compute rewards with penalty for ask_sonnet calls.
+
+        The penalty is subtracted from the final reward for each ask_sonnet call.
+        This encourages the model to learn to solve tasks itself rather than
+        always delegating to the external LLM.
+        """
+        results = []
+        for env in env_group:
+            tau2_env = env  # type: Tau2Env
+            ask_sonnet_count = tau2_env.ask_sonnet_call_count
+            penalty = self.ask_sonnet_penalty * ask_sonnet_count
+
+            metrics = {
+                "ask_sonnet_count": ask_sonnet_count,
+                "ask_sonnet_penalty": penalty,
+            }
+            results.append((-penalty, metrics))
+
+        return results
+
     def logging_tags(self) -> list[str]:
         """Return tags for logging/aggregation."""
         # Return task ID as tag for aggregating metrics
@@ -402,6 +431,8 @@ class Tau2Dataset(RLDataset):
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
+    # Penalty per ask_sonnet call
+    ask_sonnet_penalty: float = 0.0
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -419,6 +450,7 @@ class Tau2Dataset(RLDataset):
                 external_llm_model=self.external_llm_model,
                 external_llm_temperature=self.external_llm_temperature,
                 external_llm_max_tokens=self.external_llm_max_tokens,
+                ask_sonnet_penalty=self.ask_sonnet_penalty,
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -439,10 +471,13 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     seed: int = 0
     test_group_size: int = 1
     num_epochs: int = 1  # Number of epochs to train for
+    max_context_length: int | None = 16384  # Fail episode if context exceeds this
     # External LLM configuration for ask_sonnet
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
+    # Penalty per ask_sonnet call (subtracted from reward)
+    ask_sonnet_penalty: float = 0.0
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
@@ -469,9 +504,11 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             domain=self.domain,
             batch_size=self.batch_size,
             group_size=self.group_size,
+            max_context_length=self.max_context_length,
             external_llm_model=self.external_llm_model,
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
+            ask_sonnet_penalty=self.ask_sonnet_penalty,
         )
 
         test_dataset = Tau2Dataset(
@@ -480,9 +517,11 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             domain=self.domain,
             batch_size=len(test_tasks),  # Single batch for test
             group_size=self.test_group_size,
+            max_context_length=self.max_context_length,
             external_llm_model=self.external_llm_model,
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
+            ask_sonnet_penalty=self.ask_sonnet_penalty,
         )
 
         return train_dataset, test_dataset
