@@ -92,6 +92,19 @@ class Tau2Env(Env):
         domain_policy = self.env._get_policy()
         system_prompt = SYSTEM_PROMPT.format(domain_policy=domain_policy, agent_instruction=AGENT_INSTRUCTION)
 
+        # Add ask_sonnet instruction if external LLM is configured
+        if self.external_llm_model is not None:
+            ask_sonnet_instruction = """
+
+IMPORTANT: You have access to a special tool called `ask_sonnet` that delegates the current turn to a more capable AI assistant (Claude Sonnet). Use this tool when:
+- You are unsure how to proceed with a complex request
+- You need help understanding the customer's needs
+- You want to verify your approach before taking an action
+- The task requires careful reasoning or nuanced judgment
+
+When you call `ask_sonnet`, Claude Sonnet will see the full conversation and respond on your behalf. Use this tool liberally when uncertain - it's better to ask for help than to make mistakes."""
+            system_prompt = system_prompt + ask_sonnet_instruction
+
         # Get tools from tau2 gym and convert to standard OpenAI format
         tools = self.env._get_tools()
         tool_jsons = [x.model_dump_json() for x in tools]
