@@ -149,8 +149,8 @@ async def test_taubench_sampling(config: Config):
         print(f"  Tool calls: {len(parsed_message['tool_calls'])}")
         for i, tool_call in enumerate(parsed_message["tool_calls"]):
             print(f"    Tool call {i+1}:")
-            print(f"      Name: {tool_call['name']}")
-            print(f"      Arguments: {tool_call['arguments']}")
+            print(f"      Name: {tool_call.function.name}")
+            print(f"      Arguments: {tool_call.function.arguments}")
     else:
         print("  Tool calls: None")
 
@@ -164,7 +164,12 @@ async def test_taubench_sampling(config: Config):
     import re
     if "tool_calls" in parsed_message and parsed_message["tool_calls"]:
         tool_call = parsed_message["tool_calls"][0]
-        action_to_gym = json.dumps(tool_call)
+        # Convert pydantic ToolCall to tau2 format for display
+        tau2_format = {
+            "name": tool_call.function.name,
+            "arguments": json.loads(tool_call.function.arguments)
+        }
+        action_to_gym = json.dumps(tau2_format)
         print(f"\nPassing tool call to tau2 gym env.step():")
         print(f"  {action_to_gym}")
     else:
@@ -221,7 +226,7 @@ async def test_taubench_sampling(config: Config):
         if "tool_calls" in parsed_message:
             print(f"  Tool calls: {len(parsed_message['tool_calls'])}")
             for i, tool_call in enumerate(parsed_message["tool_calls"]):
-                print(f"    Tool call {i+1}: {tool_call['name']}({tool_call['arguments']})")
+                print(f"    Tool call {i+1}: {tool_call.function.name}({tool_call.function.arguments})")
         else:
             print(f"  Content: {parsed_message['content'][:100]}...")
 

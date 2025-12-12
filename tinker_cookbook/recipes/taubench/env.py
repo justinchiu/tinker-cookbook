@@ -7,9 +7,29 @@ import json
 import logging
 import os
 
+import litellm
+
+from tinker_cookbook.recipes.taubench.message_converters import (
+    convert_messages_for_openai,
+)
+
 # Configure LiteLLM (uses standard logging module, not loguru)
 litellm_logger = logging.getLogger("LiteLLM")
 litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors
+
+# Special tool for delegating to external LLM
+ASK_SONNET_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "ask_sonnet",
+        "description": "Delegate this turn to Claude Sonnet. Sonnet will see the full conversation and respond on your behalf.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    }
+}
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +49,30 @@ from tinker_cookbook.rl.types import (
 
 
 class Tau2Env(Env):
-    def __init__(self, renderer: Renderer, domain: str, task_id: str, max_context_length: int | None = None):
+    def __init__(
+        self,
+        renderer: Renderer,
+        domain: str,
+        task_id: str,
+        max_context_length: int | None = None,
+        external_llm_model: str | None = None,
+        external_llm_temperature: float = 0.0,
+        external_llm_max_tokens: int = 1024,
+    ):
         self.renderer = renderer
         self.domain = domain
         self.task_id = task_id
         self.max_context_length = max_context_length
         self._context_exceeded = False
+
+        # External LLM configuration for ask_sonnet
+        self.external_llm_model = external_llm_model
+        self.external_llm_temperature = external_llm_temperature
+        self.external_llm_max_tokens = external_llm_max_tokens
+
+        # Separate message history for external LLM (keeps raw tool_calls with IDs)
+        # This is needed because Anthropic requires tool_use_id to match tool_result
+        self.external_llm_messages: list[dict] = []
 
         # Keeping the old Sonnet ID here for reference in case Tau2 toggles back:
         # user_llm="claude-sonnet-4-5-20250929"
@@ -69,8 +107,18 @@ class Tau2Env(Env):
             }
             self.tools.append(openai_tool)
 
+        # Add ask_sonnet tool if external LLM is configured
+        if self.external_llm_model is not None:
+            self.tools.append(ASK_SONNET_TOOL)
+
         # Store messages without manually injecting tools - let the renderer handle it
         self.messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": obs},
+        ]
+
+        # Initialize external LLM messages with same initial state
+        self.external_llm_messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": obs},
         ]
@@ -84,9 +132,81 @@ class Tau2Env(Env):
         model_input = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
         return model_input, self.stop_condition
 
+    async def _call_external_llm(self) -> dict:
+        """
+        Call external LLM (e.g., Sonnet) with the current conversation context.
+        Returns an assistant message dict with content in Qwen format (tool calls as <tool_call> tags).
+        Also updates self.external_llm_messages with raw format for future calls.
+        """
+        if self.external_llm_model is None:
+            raise ValueError("external_llm_model not configured but ask_sonnet was called")
+
+        # Build tools for external LLM (excluding ask_sonnet)
+        external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
+
+        # Use external_llm_messages which preserves raw format (including tool_call IDs)
+        messages_for_llm = convert_messages_for_openai(self.external_llm_messages)
+
+        logger.info(
+            "Calling external LLM (%s) with %d messages and %d tools",
+            self.external_llm_model,
+            len(messages_for_llm),
+            len(external_tools),
+        )
+
+        response = await litellm.acompletion(
+            model=self.external_llm_model,
+            messages=messages_for_llm,
+            tools=external_tools if external_tools else None,
+            max_tokens=self.external_llm_max_tokens,
+            temperature=self.external_llm_temperature,
+        )
+
+        choice = response.choices[0]
+        message = choice.message
+
+        # Store raw response in external_llm_messages (preserves tool_calls with IDs)
+        # Just convert the litellm message object to dict
+        raw_message = message.model_dump()
+        self.external_llm_messages.append(raw_message)
+
+        # Convert to Qwen format for training (tool calls as <tool_call> tags in content)
+        result: dict = {"role": "assistant", "content": message.content or ""}
+
+        if message.tool_calls:
+            tool_call_strs = []
+            for tc in message.tool_calls:
+                tool_call_dict = {
+                    "name": tc.function.name,
+                    "arguments": json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
+                }
+                tool_call_strs.append(f"<tool_call>\n{json.dumps(tool_call_dict)}\n</tool_call>")
+
+            if result["content"]:
+                result["content"] = result["content"] + "\n" + "\n".join(tool_call_strs)
+            else:
+                result["content"] = "\n".join(tool_call_strs)
+
+        logger.info(
+            "External LLM (%s) response: %s",
+            self.external_llm_model,
+            result["content"][:100] + "..." if len(result.get("content", "")) > 100 else result.get("content", "")
+        )
+
+        return result
+
     async def step(self, action: Action) -> StepResult:
         # Parse the action to get the assistant's message
         assistant_message, parse_success = self.renderer.parse_response(action)
+
+        # Check if this is an ask_sonnet action - delegate to external LLM
+        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+            tool_call = assistant_message["tool_calls"][0]
+            if tool_call.function.name == "ask_sonnet":
+                logger.info("ask_sonnet called, delegating to external LLM")
+
+                # Call external LLM and use its response instead
+                assistant_message = await self._call_external_llm()
 
         # Add assistant's response to conversation
         self.messages.append(assistant_message)
@@ -95,22 +215,27 @@ class Tau2Env(Env):
         # Tau2 gym expects either:
         # - JSON format for tool calls: {"name": "tool_name", "arguments": {...}}
         # - Plain text for messages
-        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
-            # Send the first tool call as JSON (tau2 gym handles one tool at a time)
-            # The renderer returns tau2 format: {"id": "...", "name": "...", "arguments": {...}}
-            # We just need to extract name and arguments for tau2 gym
-            tool_call = assistant_message["tool_calls"][0]
+        import re
 
-            # Build tau2 format (just name + arguments)
+        # Check for tool calls - either in tool_calls field (from renderer.parse_response)
+        # or in <tool_call> tags in content (from external LLM)
+        tool_call_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", assistant_message.get("content", ""), flags=re.DOTALL)
+
+        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+            # From renderer.parse_response - pydantic ToolCall with nested function.name, function.arguments
+            tool_call = assistant_message["tool_calls"][0]
             tau2_tool_call = {
-                "name": tool_call["name"],
-                "arguments": tool_call["arguments"]
+                "name": tool_call.function.name,
+                "arguments": json.loads(tool_call.function.arguments)
             }
             action_str = json.dumps(tau2_tool_call)
+        elif tool_call_match:
+            # From external LLM - <tool_call> tags in content
+            # Parse the JSON inside the tags (already has name + arguments)
+            action_str = tool_call_match.group(1)
         else:
-            # Send plain text, stripping any <tool_call> tags if present
-            import re
-            action_str = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message["content"], flags=re.DOTALL).strip()
+            # Plain text - strip any <tool_call> tags just in case
+            action_str = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message.get("content", ""), flags=re.DOTALL).strip()
 
         """
         # Debug: print what we're sending to tau2 gym
@@ -142,12 +267,32 @@ class Tau2Env(Env):
             # - "user: <text>" - user messages
             # - "tool: {...}" - tool results
             if obs.startswith("user: "):
-                self.messages.append({"role": "user", "content": obs[6:]})  # Strip "user: " prefix
+                user_msg = {"role": "user", "content": obs[6:]}  # Strip "user: " prefix
+                self.messages.append(user_msg)
+                self.external_llm_messages.append(user_msg)
             elif obs.startswith("tool: "):
-                self.messages.append({"role": "tool", "content": obs[6:]})  # Strip "tool: " prefix
+                tool_content = obs[6:]  # Strip "tool: " prefix
+
+                # Get the tool_call_id from the raw external_llm_messages (has actual IDs)
+                tool_call_id = None
+                for msg in reversed(self.external_llm_messages):
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        # Raw format from litellm has tool_calls as list of dicts
+                        tool_call_id = msg["tool_calls"][0].get("id")
+                        break
+
+                tool_msg = {
+                    "role": "tool",
+                    "content": tool_content,
+                    "tool_call_id": tool_call_id or "unknown",
+                }
+                self.messages.append(tool_msg)
+                self.external_llm_messages.append(tool_msg)
             else:
                 # Fallback: add as-is (shouldn't happen but just in case)
-                self.messages.append({"role": "user", "content": obs})
+                fallback_msg = {"role": "user", "content": obs}
+                self.messages.append(fallback_msg)
+                self.external_llm_messages.append(fallback_msg)
 
         # Build next observation with tools injected - always provide it (like twenty_questions)
         next_obs = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
@@ -209,6 +354,10 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     num_envs: int
     actual_domain: str = None  # The real domain for when domain="all"
     max_context_length: int | None = None  # Max context length before failing episode
+    # External LLM configuration for ask_sonnet
+    external_llm_model: str | None = None
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task.
@@ -221,7 +370,16 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
 
         # Create envs in parallel using thread pool to avoid blocking the event loop
         return list(await asyncio.gather(*[
-            asyncio.to_thread(Tau2Env, self.renderer, env_domain, self.task_id, self.max_context_length)
+            asyncio.to_thread(
+                Tau2Env,
+                self.renderer,
+                env_domain,
+                self.task_id,
+                self.max_context_length,
+                self.external_llm_model,
+                self.external_llm_temperature,
+                self.external_llm_max_tokens,
+            )
             for _ in range(self.num_envs)
         ]))
 
@@ -240,6 +398,10 @@ class Tau2Dataset(RLDataset):
     batch_size: int
     group_size: int
     max_context_length: int | None = None  # Max context length before failing episode
+    # External LLM configuration for ask_sonnet
+    external_llm_model: str | None = None
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -254,6 +416,9 @@ class Tau2Dataset(RLDataset):
                 num_envs=self.group_size,
                 actual_domain=getattr(task, '_actual_domain', None),  # Pass the actual domain if available
                 max_context_length=self.max_context_length,
+                external_llm_model=self.external_llm_model,
+                external_llm_temperature=self.external_llm_temperature,
+                external_llm_max_tokens=self.external_llm_max_tokens,
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -274,6 +439,10 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     seed: int = 0
     test_group_size: int = 1
     num_epochs: int = 1  # Number of epochs to train for
+    # External LLM configuration for ask_sonnet
+    external_llm_model: str | None = None
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
@@ -300,6 +469,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             domain=self.domain,
             batch_size=self.batch_size,
             group_size=self.group_size,
+            external_llm_model=self.external_llm_model,
+            external_llm_temperature=self.external_llm_temperature,
+            external_llm_max_tokens=self.external_llm_max_tokens,
         )
 
         test_dataset = Tau2Dataset(
@@ -308,6 +480,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             domain=self.domain,
             batch_size=len(test_tasks),  # Single batch for test
             group_size=self.test_group_size,
+            external_llm_model=self.external_llm_model,
+            external_llm_temperature=self.external_llm_temperature,
+            external_llm_max_tokens=self.external_llm_max_tokens,
         )
 
         return train_dataset, test_dataset

@@ -14,7 +14,7 @@ import tau2.registry as reg
 
 import tinker
 from tinker_cookbook.recipes.taubench.env import construct_tau2_env
-from tinker_cookbook.renderers import TrainOnWhat
+from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
 
@@ -166,12 +166,15 @@ def _normalize_tau2_messages(messages: list[dict]) -> list[dict]:
             new_msg["content"] = ""
 
         # Strip "id" field from tool_calls (model should only learn name + arguments)
+        # Convert to pydantic ToolCall format expected by renderer
         if msg.get("tool_calls"):
             new_msg["tool_calls"] = [
-                {
-                    "name": tc["name"],
-                    "arguments": tc["arguments"]
-                }
+                ToolCall(
+                    function=ToolCall.FunctionBody(
+                        name=tc["name"],
+                        arguments=json.dumps(tc["arguments"]) if isinstance(tc["arguments"], dict) else tc["arguments"]
+                    )
+                )
                 for tc in msg["tool_calls"]
             ]
 
