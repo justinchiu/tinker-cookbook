@@ -541,9 +541,24 @@ class Qwen3Renderer(Renderer):
         tokens.extend(self.tokenizer.encode(prefill or "", add_special_tokens=False))
         return tinker.ModelInput.from_ints(tokens)
 
+    def _format_tools_as_text(self, tools: list[dict]) -> str:
+        """Format tools as plain text for models without native tool support."""
+        import json
+        tool_descriptions = []
+        for tool in tools:
+            func = tool.get("function", tool)
+            name = func.get("name", "unknown")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+            tool_descriptions.append(
+                f"- {name}: {desc}\n  Parameters: {json.dumps(params, indent=2)}"
+            )
+        return "\n".join(tool_descriptions)
+
     def _inject_tools_into_system_message(self, messages: list[Message], tools: list[dict]) -> list[Message]:
         """
         Inject tools into the system message using the tokenizer's chat template.
+        Falls back to plain text formatting if the tokenizer doesn't support tools.
         """
         import copy
         messages = copy.deepcopy(messages)
@@ -560,15 +575,29 @@ class Qwen3Renderer(Renderer):
         if system_msg is None:
             system_msg = {"role": "system", "content": "You are a helpful assistant."}
 
-        # Use tokenizer's chat template to format the system message with tools
-        system_message_list = [{"role": "system", "content": system_msg["content"]}]
-        system_prompt_with_tools = self.tokenizer.apply_chat_template(
-            system_message_list, tools=tools, tokenize=False, add_generation_prompt=False
-        )
+        # Try using tokenizer's chat template first
+        try:
+            system_message_list = [{"role": "system", "content": system_msg["content"]}]
+            system_prompt_with_tools = self.tokenizer.apply_chat_template(
+                system_message_list, tools=tools, tokenize=False, add_generation_prompt=False
+            )
 
-        # Truncate the first and last special tokens (<|im_start|>system\n and <|im_end|>)
-        # For Qwen3: <|im_start|>system\n has 19 chars, <|im_end|> has 11 chars
-        system_content = system_prompt_with_tools[19:-11]
+            # Truncate the first and last special tokens (<|im_start|>system\n and <|im_end|>)
+            # For Qwen3: <|im_start|>system\n has 19 chars, <|im_end|> has 11 chars
+            system_content = system_prompt_with_tools[19:-11]
+        except (TypeError, Exception):
+            # Fallback: format tools as plain text and append to system message
+            tools_text = self._format_tools_as_text(tools)
+            system_content = f"""{system_msg["content"]}
+
+# Available Tools
+
+You have access to the following tools. To use a tool, respond with a JSON object in the following format:
+<tool_call>
+{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
+</tool_call>
+
+{tools_text}"""
 
         # Create updated messages list with modified system message
         updated_messages = [{"role": "system", "content": system_content}] + other_messages

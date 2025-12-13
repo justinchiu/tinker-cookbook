@@ -87,18 +87,18 @@ def get_recommended_renderer_names(model_name: str) -> list[str]:
     The first result is the most recommended renderer for the model.
     """
     attributes = get_model_attributes(model_name)
-    if not attributes.is_chat:
+    if attributes.organization == "Qwen" and attributes.version_str == "3":
+        # Qwen3 base models use the same renderer as instruct models
+        if "-Instruct" in model_name:
+            return ["qwen3_instruct"]
+        else:
+            return ["qwen3", "qwen3_disable_thinking"]
+    elif not attributes.is_chat:
         return ["role_colon"]
     elif attributes.organization == "meta-llama":
         return ["llama3"]
     elif attributes.organization == "Qwen":
-        if attributes.version_str == "3":
-            if "-Instruct" in model_name:
-                return ["qwen3_instruct"]
-            else:
-                return ["qwen3", "qwen3_disable_thinking"]
-        else:
-            raise ValueError(f"Unknown model: {model_name}")
+        raise ValueError(f"Unknown model: {model_name}")
     elif attributes.organization == "deepseek-ai":
         return ["deepseekv3_disable_thinking", "deepseekv3"]
     elif attributes.organization == "openai":
