@@ -67,6 +67,14 @@ def _compute_trajectory_metrics(trajectory_groups_P: List[TrajectoryGroup]) -> D
         transition.ob.length for traj in flat_trajs_PG for transition in traj.transitions
     ]
     turns_by_trajectory = [len(traj.transitions) for traj in flat_trajs_PG]
+
+    # Compute entropy from logprobs (if available)
+    all_logprobs = []
+    for traj in flat_trajs_PG:
+        for transition in traj.transitions:
+            if transition.ac.maybe_logprobs is not None:
+                all_logprobs.extend(transition.ac.maybe_logprobs)
+
     # Compute metrics
     metrics = {
         "ac_tokens_per_turn": sum(ac_tokens_by_turn) / sum(turns_by_trajectory),
@@ -77,6 +85,10 @@ def _compute_trajectory_metrics(trajectory_groups_P: List[TrajectoryGroup]) -> D
         "total_ac_tokens": sum(ac_tokens_by_turn),
         "total_ob_tokens": sum(ob_tokens_by_turn),
     }
+
+    # Add entropy metric if logprobs are available
+    if all_logprobs:
+        metrics["entropy"] = -np.mean(all_logprobs).item()
     metrics["reward/total"] = np.mean(
         [reward for tg in trajectory_groups_P for reward in tg.get_total_rewards()]
     ).item()

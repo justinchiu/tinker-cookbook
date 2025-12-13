@@ -216,17 +216,33 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
         assistant_message, parse_success = self.renderer.parse_response(action)
 
         # Check if this is an ask_sonnet action - delegate to external LLM
+        sonnet_response = None
         if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
             tool_call = assistant_message["tool_calls"][0]
             if tool_call.function.name == "ask_sonnet":
                 logger.info("ask_sonnet called, delegating to external LLM")
                 self.ask_sonnet_call_count += 1
 
-                # Call external LLM and use its response instead
-                assistant_message = await self._call_external_llm()
+                # Add the ask_sonnet call to messages first
+                self.messages.append(assistant_message)
 
-        # Add assistant's response to conversation
-        self.messages.append(assistant_message)
+                # Call external LLM
+                sonnet_response = await self._call_external_llm()
+
+                # Add Sonnet's response as a tool result
+                tool_result_msg = {
+                    "role": "tool",
+                    "content": sonnet_response.get("content", ""),
+                    "tool_call_id": "ask_sonnet_call",
+                }
+                self.messages.append(tool_result_msg)
+
+                # Use Sonnet's response for the tau2 gym action
+                assistant_message = sonnet_response
+
+        # Add assistant's response to conversation (if not ask_sonnet, which already added messages above)
+        if sonnet_response is None:
+            self.messages.append(assistant_message)
 
         # Convert the assistant's response to the format expected by tau2 gym
         # Tau2 gym expects either:
@@ -628,6 +644,10 @@ def build_tau_eval_builders(
     task_seed: int,
     eval_name: str,
     max_context_length: int | None = None,
+    # External LLM (ask_sonnet) configuration
+    external_llm_model: str | None = None,
+    external_llm_temperature: float = 0.0,
+    external_llm_max_tokens: int = 1024,
 ) -> list[EvaluatorBuilder]:
     """Construct Tau2 rollout evaluators for supervised recipes."""
 
@@ -643,6 +663,9 @@ def build_tau_eval_builders(
         seed=task_seed,
         test_group_size=max(1, group_size),
         num_epochs=1,
+        external_llm_model=external_llm_model,
+        external_llm_temperature=external_llm_temperature,
+        external_llm_max_tokens=external_llm_max_tokens,
     )
 
     # Build datasets ahead of time so evaluator builders stay lightweight at runtime
@@ -661,6 +684,9 @@ def build_tau_eval_builders(
         batch_size=min(len(tasks), max(1, batch_size)),
         group_size=max(1, group_size),
         max_context_length=max_context_length,
+        external_llm_model=external_llm_model,
+        external_llm_temperature=external_llm_temperature,
+        external_llm_max_tokens=external_llm_max_tokens,
     )
 
     logger = logging.getLogger(__name__)

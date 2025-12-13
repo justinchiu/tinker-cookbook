@@ -13,12 +13,72 @@ from typing import cast
 import tau2.registry as reg
 
 import tinker
-from tinker_cookbook.recipes.taubench.env import construct_tau2_env
+from tinker_cookbook.recipes.taubench.env import construct_tau2_env, ASK_SONNET_TOOL
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
 
 logger = logging.getLogger(__name__)
+
+
+def _inject_ask_sonnet_calls(
+    messages: list[dict],
+    injection_rate: float,
+    rng: random.Random,
+) -> list[dict]:
+    """Randomly inject ask_sonnet tool calls before assistant messages.
+
+    For each assistant message, with probability `injection_rate`:
+    - Insert an ask_sonnet tool call before it
+    - Convert the original assistant message to a tool result (Sonnet's response)
+
+    This teaches the model: ask_sonnet -> Sonnet responds -> conversation continues
+    """
+    if injection_rate <= 0:
+        return messages
+
+    result = []
+    for msg in messages:
+        if msg["role"] == "assistant" and rng.random() < injection_rate:
+            # Insert ask_sonnet call
+            ask_sonnet_msg = {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    ToolCall(
+                        function=ToolCall.FunctionBody(
+                            name="ask_sonnet",
+                            arguments="{}"
+                        )
+                    )
+                ]
+            }
+            result.append(ask_sonnet_msg)
+
+            # Convert original assistant message to tool result (Sonnet's response)
+            # Serialize the original content (including any tool calls)
+            if msg.get("tool_calls"):
+                sonnet_response = json.dumps({
+                    "content": msg.get("content", ""),
+                    "tool_calls": [
+                        {"name": tc.function.name, "arguments": tc.function.arguments}
+                        if hasattr(tc, 'function') else tc
+                        for tc in msg["tool_calls"]
+                    ]
+                })
+            else:
+                sonnet_response = msg.get("content", "")
+
+            tool_result_msg = {
+                "role": "tool",
+                "content": sonnet_response,
+                "tool_call_id": "ask_sonnet_call",
+            }
+            result.append(tool_result_msg)
+        else:
+            result.append(msg)
+
+    return result
 
 _TASK_SPLIT_CACHE: dict[tuple[str, str], set[str]] = {}
 
@@ -362,6 +422,8 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
     """
 
     simulation_files: list[str]  # List of paths to simulation JSON files
+    ask_sonnet_injection_rate: float = 0.0  # Rate at which to inject ask_sonnet calls (0.0 = disabled)
+    ask_sonnet_injection_seed: int = 42  # Seed for reproducible injection
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
         # Extract, normalize, and convert to Datum objects immediately
@@ -371,9 +433,15 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
             else TrainOnWhat.ALL_ASSISTANT_MESSAGES
         )
 
+        # RNG for ask_sonnet injection
+        injection_rng = random.Random(self.ask_sonnet_injection_seed)
+
         datums_by_domain: dict[str, list[tuple[tinker.Datum, str]]] = defaultdict(list)
         domain_counts: dict[str, int] = defaultdict(int)
         domain_tools: dict[str, list[dict] | None] = {}
+        injection_count = 0
+        total_assistant_msgs = 0
+
         for sim_file in self.simulation_files:
             with open(sim_file, 'r') as f:
                 data = json.load(f)
@@ -394,11 +462,30 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                         file_domain,
                     )
 
+                # Add ask_sonnet tool if injection is enabled
+                if self.ask_sonnet_injection_rate > 0 and domain_tools[file_domain] is not None:
+                    domain_tools[file_domain] = domain_tools[file_domain] + [ASK_SONNET_TOOL]
+                    logger.info("Added ask_sonnet tool for domain '%s'", file_domain)
+
             for sim in data['simulations']:
                 messages = sim['messages']
                 if messages:  # Skip empty conversations
                     # Normalize messages
                     normalized = _normalize_tau2_messages(messages)
+
+                    # Count assistant messages before injection
+                    assistant_count = sum(1 for m in normalized if m["role"] == "assistant")
+                    total_assistant_msgs += assistant_count
+
+                    # Inject ask_sonnet calls if enabled
+                    if self.ask_sonnet_injection_rate > 0:
+                        pre_len = len(normalized)
+                        normalized = _inject_ask_sonnet_calls(
+                            normalized, self.ask_sonnet_injection_rate, injection_rng
+                        )
+                        # Count injections (each injection adds 2 messages: ask_sonnet + tool result)
+                        injection_count += (len(normalized) - pre_len) // 2
+
                     # Convert to Datum immediately
                     tokens, weights = self.renderer.build_supervised_example(
                         normalized,
@@ -412,6 +499,13 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
         total_datums = sum(domain_counts.values())
         logger.info(f"Loaded {total_datums} conversations from {len(self.simulation_files)} files")
         logger.info(f"Domain distribution: {dict(domain_counts)}")
+
+        if self.ask_sonnet_injection_rate > 0:
+            logger.info(
+                "ask_sonnet injection: %d/%d assistant turns replaced with ask_sonnet->tool_result (%.1f%% target rate)",
+                injection_count, total_assistant_msgs,
+                self.ask_sonnet_injection_rate * 100
+            )
 
         train_data: list[tinker.Datum] = []
         test_data: list[tinker.Datum] = []

@@ -74,6 +74,14 @@ class CLIConfig:
     wandb_name: str = "qwen3-30b-a3b-instruct-alldomains"
     behavior_if_log_dir_exists: cli_utils.LogdirBehavior = "ask"
 
+    # ask_sonnet injection (for teaching model to use ask_sonnet tool)
+    ask_sonnet_injection_rate: float = 0.0  # 0.0 = disabled, 0.5 = 50% of assistant turns
+
+    # External LLM (ask_sonnet) for eval - needed if training with ask_sonnet injection
+    external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
+
 
 def main():
     cli_config = chz.entrypoint(CLIConfig)
@@ -124,7 +132,14 @@ def main():
     dataset_builder = Tau2SimulationFilesBuilder(
         common_config=common_config,
         simulation_files=SIMULATION_FILES,
+        ask_sonnet_injection_rate=cli_config.ask_sonnet_injection_rate,
     )
+
+    # Auto-set external_llm_model if ask_sonnet injection is enabled but model not specified
+    external_llm_model = cli_config.external_llm_model
+    if cli_config.ask_sonnet_injection_rate > 0 and external_llm_model is None:
+        external_llm_model = "claude-sonnet-4-5-20250929"
+        print(f"ask_sonnet injection enabled, using default external_llm_model: {external_llm_model}")
 
     tau_eval_builders = build_tau_eval_builders(
         enabled=cli_config.enable_tau_eval,
@@ -139,6 +154,9 @@ def main():
         task_seed=cli_config.eval_task_seed,
         eval_name=cli_config.eval_name,
         max_context_length=cli_config.eval_max_context_length,
+        external_llm_model=external_llm_model,
+        external_llm_temperature=cli_config.external_llm_temperature,
+        external_llm_max_tokens=cli_config.external_llm_max_tokens,
     )
 
     # Build training config
