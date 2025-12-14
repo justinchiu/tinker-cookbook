@@ -226,6 +226,14 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
         if not raw_message.get("content") and raw_message.get("tool_calls"):
             # Remove empty/None content for tool-call-only messages
             raw_message.pop("content", None)
+        # Only keep the first tool call - tau2 gym processes one at a time, and Anthropic
+        # requires every tool_use to have a corresponding tool_result immediately after
+        if raw_message.get("tool_calls") and len(raw_message["tool_calls"]) > 1:
+            logger.warning(
+                "Sonnet made %d tool calls, keeping only the first one for external_llm_messages",
+                len(raw_message["tool_calls"])
+            )
+            raw_message["tool_calls"] = [raw_message["tool_calls"][0]]
         self.external_llm_messages.append(raw_message)
         logger.info(
             "Added Sonnet response to external_llm_messages (now %d messages), has_tool_calls=%s",
@@ -294,6 +302,15 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             # Store in raw format (with tool_calls as dicts, not pydantic objects)
             raw_assistant_msg = {"role": "assistant", "content": assistant_message.get("content", "")}
             if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+                # Only keep the first tool call - tau2 gym processes one at a time, and Anthropic
+                # requires every tool_use to have a corresponding tool_result immediately after
+                tool_calls = assistant_message["tool_calls"]
+                if len(tool_calls) > 1:
+                    logger.warning(
+                        "Qwen made %d tool calls, keeping only the first one for external_llm_messages",
+                        len(tool_calls)
+                    )
+                    tool_calls = [tool_calls[0]]
                 raw_assistant_msg["tool_calls"] = [
                     {
                         "id": tc.id or f"call_{id(tc)}",
@@ -303,7 +320,7 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
                             "arguments": tc.function.arguments,
                         }
                     }
-                    for tc in assistant_message["tool_calls"]
+                    for tc in tool_calls
                 ]
                 # Remove empty content for tool-call messages (Anthropic requirement)
                 if not raw_assistant_msg["content"]:
