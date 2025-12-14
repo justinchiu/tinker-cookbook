@@ -28,9 +28,12 @@ def _inject_ask_sonnet_calls(
 ) -> list[dict]:
     """Randomly inject ask_sonnet tool calls before assistant messages.
 
-    For each assistant message, with probability `injection_rate`:
+    For each assistant message (except the first), with probability `injection_rate`:
     - Insert an ask_sonnet tool call before it
     - Convert the original assistant message to a tool result (Sonnet's response)
+
+    The first assistant message is never replaced because the agent should
+    greet the customer directly, not delegate the greeting.
 
     This teaches the model: ask_sonnet -> Sonnet responds -> conversation continues
     """
@@ -38,7 +41,14 @@ def _inject_ask_sonnet_calls(
         return messages
 
     result = []
+    is_first_assistant = True
     for msg in messages:
+        # Skip first assistant message - agent should greet directly
+        if msg["role"] == "assistant" and is_first_assistant:
+            is_first_assistant = False
+            result.append(msg)
+            continue
+
         if msg["role"] == "assistant" and rng.random() < injection_rate:
             # Insert ask_sonnet call
             ask_sonnet_msg = {

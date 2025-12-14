@@ -102,7 +102,9 @@ IMPORTANT: You have access to a special tool called `ask_sonnet` that delegates 
 - You want to verify your approach before taking an action
 - The task requires careful reasoning or nuanced judgment
 
-When you call `ask_sonnet`, Claude Sonnet will see the full conversation and respond on your behalf. Use this tool liberally when uncertain - it's better to ask for help than to make mistakes."""
+When you call `ask_sonnet`, Claude Sonnet will see the full conversation and respond on your behalf. Use this tool liberally when uncertain - it's better to ask for help than to make mistakes.
+
+NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonnet` for the initial greeting - handle it directly, then use `ask_sonnet` for subsequent turns if needed."""
             system_prompt = system_prompt + ask_sonnet_instruction
 
         # Get tools from tau2 gym and convert to standard OpenAI format
@@ -128,15 +130,18 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
             self.tools.append(ASK_SONNET_TOOL)
 
         # Store messages without manually injecting tools - let the renderer handle it
-        # Only add user message if obs is non-empty (tau2 may expect agent to speak first)
-        self.messages = [{"role": "system", "content": system_prompt}]
-        if obs:
-            self.messages.append({"role": "user", "content": obs})
+        # If obs is empty, tau2 expects agent to speak first - use placeholder for Sonnet
+        initial_user_content = obs if obs else "(Customer connected, please greet them)"
+        self.messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": initial_user_content},
+        ]
 
         # Initialize external LLM messages with same initial state
-        self.external_llm_messages = [{"role": "system", "content": system_prompt}]
-        if obs:
-            self.external_llm_messages.append({"role": "user", "content": obs})
+        self.external_llm_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": initial_user_content},
+        ]
 
     @property
     def stop_condition(self) -> StopCondition:
