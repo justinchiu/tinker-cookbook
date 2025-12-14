@@ -92,7 +92,11 @@ def convert_messages_for_anthropic(
             continue
 
         # Regular user/assistant message
-        converted.append({"role": role, "content": content})
+        # Anthropic requires non-empty text content blocks
+        if role == "assistant" and not content:
+            # Skip empty assistant messages without tool_calls (shouldn't happen)
+            continue
+        converted.append({"role": role, "content": content or "(empty)"})
 
     return system_content, converted
 
@@ -120,7 +124,8 @@ def convert_messages_for_openai(
 
     converted = []
     for msg in messages:
-        new_msg = {"role": msg["role"], "content": msg.get("content", "")}
+        content = msg.get("content") or ""  # Handle None explicitly
+        new_msg = {"role": msg["role"]}
 
         # Convert pydantic ToolCall objects to dict format
         if "tool_calls" in msg and msg["tool_calls"]:
@@ -137,6 +142,17 @@ def convert_messages_for_openai(
                     })
                 elif isinstance(tc, dict):
                     new_msg["tool_calls"].append(tc)
+            # For assistant messages with tool_calls, only include content if non-empty
+            # (Anthropic rejects empty content strings)
+            if content:
+                new_msg["content"] = content
+        else:
+            # For messages without tool_calls, include content
+            # Anthropic requires non-empty text content blocks, so use placeholder if empty
+            if msg["role"] == "assistant" and not content:
+                # Skip empty assistant messages without tool_calls (shouldn't happen)
+                continue
+            new_msg["content"] = content
 
         # Handle tool_call_id for tool response messages
         if "tool_call_id" in msg:

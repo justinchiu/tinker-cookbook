@@ -169,21 +169,59 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
             len(messages_for_llm),
             len(external_tools),
         )
+        # Debug: log messages being sent with content details
+        for i, msg in enumerate(messages_for_llm):
+            content = msg.get("content")
+            content_preview = None
+            if content:
+                content_preview = content[:50] + "..." if len(content) > 50 else content
+            logger.debug(
+                "Message %d: role=%s, content=%r, has_tool_calls=%s",
+                i, msg.get("role"), content_preview,
+                "tool_calls" in msg and bool(msg.get("tool_calls"))
+            )
 
-        response = await litellm.acompletion(
-            model=self.external_llm_model,
-            messages=messages_for_llm,
-            tools=external_tools if external_tools else None,
-            max_tokens=self.external_llm_max_tokens,
-            temperature=self.external_llm_temperature,
-        )
+        try:
+            response = await litellm.acompletion(
+                model=self.external_llm_model,
+                messages=messages_for_llm,
+                tools=external_tools if external_tools else None,
+                max_tokens=self.external_llm_max_tokens,
+                temperature=self.external_llm_temperature,
+            )
+        except Exception as e:
+            # Print detailed debug info on error
+            print("\n" + "=" * 80)
+            print("ERROR calling external LLM - dumping messages:")
+            print("=" * 80)
+            for i, msg in enumerate(messages_for_llm):
+                print(f"\n--- Message {i} ---")
+                print(f"  role: {msg.get('role')}")
+                content = msg.get('content')
+                if content is not None:
+                    print(f"  content type: {type(content).__name__}")
+                    print(f"  content empty: {not content}")
+                    print(f"  content repr: {repr(content[:200]) if len(str(content)) > 200 else repr(content)}")
+                else:
+                    print(f"  content: None")
+                if msg.get('tool_calls'):
+                    print(f"  tool_calls: {len(msg['tool_calls'])} calls")
+                    for j, tc in enumerate(msg['tool_calls']):
+                        print(f"    [{j}] id={tc.get('id')}, name={tc.get('function', {}).get('name')}")
+                if msg.get('tool_call_id'):
+                    print(f"  tool_call_id: {msg['tool_call_id']}")
+            print("=" * 80 + "\n")
+            raise
 
         choice = response.choices[0]
         message = choice.message
 
         # Store raw response in external_llm_messages (preserves tool_calls with IDs)
-        # Just convert the litellm message object to dict
+        # Convert litellm message to dict and fix empty content (Anthropic rejects empty content)
         raw_message = message.model_dump()
+        if not raw_message.get("content") and raw_message.get("tool_calls"):
+            # Remove empty/None content for tool-call-only messages
+            raw_message.pop("content", None)
         self.external_llm_messages.append(raw_message)
 
         # Convert to Qwen format for training (tool calls as <tool_call> tags in content)
@@ -300,7 +338,11 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
             # - "user: <text>" - user messages
             # - "tool: {...}" - tool results
             if obs.startswith("user: "):
-                user_msg = {"role": "user", "content": obs[6:]}  # Strip "user: " prefix
+                user_content = obs[6:]  # Strip "user: " prefix
+                # Anthropic requires non-empty content
+                if not user_content:
+                    user_content = "(waiting)"
+                user_msg = {"role": "user", "content": user_content}
                 self.messages.append(user_msg)
                 self.external_llm_messages.append(user_msg)
             elif obs.startswith("tool: "):
@@ -313,6 +355,10 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
                         # Raw format from litellm has tool_calls as list of dicts
                         tool_call_id = msg["tool_calls"][0].get("id")
                         break
+
+                # Anthropic requires non-empty content for tool results
+                if not tool_content:
+                    tool_content = "(empty result)"
 
                 tool_msg = {
                     "role": "tool",
