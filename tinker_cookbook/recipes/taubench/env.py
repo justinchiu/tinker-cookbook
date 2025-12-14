@@ -128,16 +128,15 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
             self.tools.append(ASK_SONNET_TOOL)
 
         # Store messages without manually injecting tools - let the renderer handle it
-        self.messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": obs},
-        ]
+        # Only add user message if obs is non-empty (tau2 may expect agent to speak first)
+        self.messages = [{"role": "system", "content": system_prompt}]
+        if obs:
+            self.messages.append({"role": "user", "content": obs})
 
         # Initialize external LLM messages with same initial state
-        self.external_llm_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": obs},
-        ]
+        self.external_llm_messages = [{"role": "system", "content": system_prompt}]
+        if obs:
+            self.external_llm_messages.append({"role": "user", "content": obs})
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -223,6 +222,11 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
             # Remove empty/None content for tool-call-only messages
             raw_message.pop("content", None)
         self.external_llm_messages.append(raw_message)
+        logger.info(
+            "Added Sonnet response to external_llm_messages (now %d messages), has_tool_calls=%s",
+            len(self.external_llm_messages),
+            bool(raw_message.get("tool_calls"))
+        )
 
         # Convert to Qwen format for training (tool calls as <tool_call> tags in content)
         result: dict = {"role": "assistant", "content": message.content or ""}
@@ -281,6 +285,25 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
         # Add assistant's response to conversation (if not ask_sonnet, which already added messages above)
         if sonnet_response is None:
             self.messages.append(assistant_message)
+            # Also add to external_llm_messages so Sonnet has full context if called later
+            # Store in raw format (with tool_calls as dicts, not pydantic objects)
+            raw_assistant_msg = {"role": "assistant", "content": assistant_message.get("content", "")}
+            if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
+                raw_assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id or f"call_{id(tc)}",
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                    }
+                    for tc in assistant_message["tool_calls"]
+                ]
+                # Remove empty content for tool-call messages (Anthropic requirement)
+                if not raw_assistant_msg["content"]:
+                    del raw_assistant_msg["content"]
+            self.external_llm_messages.append(raw_assistant_msg)
 
         # Convert the assistant's response to the format expected by tau2 gym
         # Tau2 gym expects either:
@@ -345,6 +368,10 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
                 user_msg = {"role": "user", "content": user_content}
                 self.messages.append(user_msg)
                 self.external_llm_messages.append(user_msg)
+                logger.info(
+                    "Added user message to both histories (messages=%d, external=%d)",
+                    len(self.messages), len(self.external_llm_messages)
+                )
             elif obs.startswith("tool: "):
                 tool_content = obs[6:]  # Strip "tool: " prefix
 
@@ -367,6 +394,10 @@ When you call `ask_sonnet`, Claude Sonnet will see the full conversation and res
                 }
                 self.messages.append(tool_msg)
                 self.external_llm_messages.append(tool_msg)
+                logger.info(
+                    "Added tool result to both histories (messages=%d, external=%d), tool_call_id=%s",
+                    len(self.messages), len(self.external_llm_messages), tool_call_id
+                )
             else:
                 # Fallback: add as-is (shouldn't happen but just in case)
                 fallback_msg = {"role": "user", "content": obs}

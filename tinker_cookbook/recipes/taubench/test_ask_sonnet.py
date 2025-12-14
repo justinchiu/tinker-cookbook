@@ -55,10 +55,27 @@ def print_messages(messages, title="MESSAGES"):
         tool_info = ""
         if has_tool_calls:
             tc = msg["tool_calls"][0]
-            tool_info = f" -> {tc.function.name}({tc.function.arguments[:50]}...)"
-        print(f"  [{i}] {role}{' [has tool_calls]' if has_tool_calls else ''}{tool_info}")
+            # Handle both pydantic ToolCall and dict formats
+            if hasattr(tc, 'function'):
+                tool_info = f" -> {tc.function.name}({tc.function.arguments[:50]}...)"
+            elif isinstance(tc, dict):
+                func = tc.get("function", tc)
+                tool_info = f" -> {func.get('name')}({str(func.get('arguments', ''))[:50]}...)"
+        tool_call_id = msg.get("tool_call_id", "")
+        tool_call_id_info = f" [tool_call_id={tool_call_id}]" if tool_call_id else ""
+        print(f"  [{i}] {role}{' [has tool_calls]' if has_tool_calls else ''}{tool_info}{tool_call_id_info}")
         print(f"      content: {content_preview}")
     print("-" * 80)
+
+
+def print_both_histories(env, title="MESSAGE HISTORIES"):
+    """Print both self.messages and self.external_llm_messages side by side."""
+    print("\n" + "=" * 80)
+    print(title)
+    print("=" * 80)
+
+    print_messages(env.messages, "self.messages (Qwen's view)")
+    print_messages(env.external_llm_messages, "self.external_llm_messages (Sonnet's view)")
 
 
 def print_tool_call(tc: ToolCall, indent: str = "    "):
@@ -119,7 +136,7 @@ async def test_ask_sonnet_multi_turn(num_turns: int = 3):
     )
 
     print(f"\nTools available: {len(env.tools)}")
-    print_messages(env.messages, "INITIAL MESSAGES")
+    print_both_histories(env, "INITIAL STATE")
 
     # Get initial observation
     obs, stop_condition = await env.initial_observation()
@@ -136,55 +153,23 @@ async def test_ask_sonnet_multi_turn(num_turns: int = 3):
         action_str = f"<tool_call>\n{ask_sonnet_json}\n</tool_call><|im_end|>"
         action_tokens = tokenizer.encode(action_str, add_special_tokens=False)
 
-        # First show what Qwen would do
-        print(f"\n--- QWEN's response ---")
-        qwen_prompt = renderer.build_generation_prompt(env.messages, tools=env.tools)
-        service_client = tinker.ServiceClient()
-        sampling_client = service_client.create_sampling_client(base_model=model_name, model_path=None)
-        qwen_result = await sampling_client.sample_async(
-            qwen_prompt,
-            num_samples=1,
-            sampling_params=tinker.SamplingParams(
-                max_tokens=1024,
-                temperature=0.0,
-                stop=stop_condition,
-            ),
-        )
-        qwen_message, _ = renderer.parse_response(qwen_result.sequences[0].tokens)
-        print_assistant_message(qwen_message, "Qwen")
+        print(f"\nSending ask_sonnet action...")
 
-        # Now send ask_sonnet to see what Sonnet does
-        print(f"\n--- SONNET's response ---")
-
-        # Step the environment
+        # Step the environment - this calls Sonnet
         result = await env.step(action_tokens)
-
-        # Get sonnet's response
-        sonnet_message = None
-        for msg in reversed(env.messages):
-            if msg.get("role") == "assistant":
-                sonnet_message = msg
-                break
-
-        import ipdb; ipdb.set_trace()
-
-        # Print sonnet's response
-        for msg in reversed(env.messages):
-            if msg.get("role") == "assistant":
-                print_assistant_message(msg, "Sonnet")
-                break
 
         print(f"\nStep result:")
         print(f"  episode_done: {result.episode_done}")
         print(f"  reward: {result.reward}")
         print(f"  next_observation.length: {result.next_observation.length} tokens")
+        print(f"  ask_sonnet_call_count: {env.ask_sonnet_call_count}")
+
+        # Print both message histories to compare
+        print_both_histories(env, f"MESSAGE HISTORIES AFTER TURN {turn + 1}")
 
         if result.episode_done:
             print(f"\nEpisode ended after turn {turn + 1}")
             break
-
-        # Print all messages so far
-        print_messages(env.messages, f"ALL MESSAGES AFTER TURN {turn + 1}")
 
     print("\n" + "=" * 80)
     print("[DONE] Multi-turn test completed!")
@@ -333,6 +318,84 @@ async def test_without_external_llm():
     print(f"\n[PASS] ask_sonnet correctly not in tools (external_llm_model=None)")
 
 
+async def test_direct_qwen_multi_turn(num_turns: int = 3):
+    """Test multiple turns where Qwen responds directly (no ask_sonnet)."""
+    model_name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    external_llm = "claude-sonnet-4-5-20250929"
+    domain = "retail"
+
+    print("\n" + "=" * 80)
+    print(f"TEST: Direct Qwen responses ({num_turns} turns, NO ask_sonnet)")
+    print("=" * 80)
+
+    task_id = get_first_task_id(domain)
+    tokenizer = get_tokenizer(model_name)
+    renderer_name = get_recommended_renderer_name(model_name)
+    renderer = get_renderer(renderer_name, tokenizer=tokenizer)
+
+    env = Tau2Env(
+        renderer=renderer,
+        domain=domain,
+        task_id=task_id,
+        external_llm_model=external_llm,
+    )
+
+    print_both_histories(env, "INITIAL STATE")
+
+    obs, stop_condition = await env.initial_observation()
+
+    # Direct responses Qwen might make
+    direct_responses = [
+        "Hello! I'd be happy to help you with those exchanges. Could you please provide your name and zip code so I can look up your account?<|im_end|>",
+        "<tool_call>\n{\"name\": \"find_user_id_by_name_zip\", \"arguments\": {\"first_name\": \"Yusuf\", \"last_name\": \"Rossi\", \"zip\": \"19122\"}}\n</tool_call><|im_end|}",
+        "<tool_call>\n{\"name\": \"get_user_details\", \"arguments\": {\"user_id\": \"yusuf_rossi_9620\"}}\n</tool_call><|im_end|}",
+    ]
+
+    for turn in range(num_turns):
+        print("\n" + "-" * 80)
+        print(f"TURN {turn + 1}/{num_turns} (Direct Qwen response)")
+        print("-" * 80)
+
+        action_str = direct_responses[turn % len(direct_responses)]
+        action_tokens = tokenizer.encode(action_str, add_special_tokens=False)
+
+        result = await env.step(action_tokens)
+
+        print(f"\nStep result: episode_done={result.episode_done}, ask_sonnet_count={env.ask_sonnet_call_count}")
+        print_both_histories(env, f"AFTER TURN {turn + 1}")
+
+        if result.episode_done:
+            print(f"\nEpisode ended after turn {turn + 1}")
+            break
+
+    print("\n" + "=" * 80)
+    print(f"FINAL: messages={len(env.messages)}, external={len(env.external_llm_messages)}")
+    print("Both should be EQUAL for direct responses")
+    print("=" * 80)
+
+
 if __name__ == "__main__":
-    # Run multi-turn test with external LLM
-    asyncio.run(test_ask_sonnet_multi_turn(num_turns=3))
+    import sys
+
+    # Suppress debug logging for cleaner output
+    logging.getLogger("tau2").setLevel(logging.WARNING)
+    logging.getLogger("tinker_cookbook.recipes.taubench.env").setLevel(logging.WARNING)
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+
+    if len(sys.argv) > 1 and sys.argv[1] == "ask_sonnet":
+        # Test with ask_sonnet
+        asyncio.run(test_ask_sonnet_multi_turn(num_turns=3))
+    elif len(sys.argv) > 1 and sys.argv[1] == "direct":
+        # Test direct Qwen responses
+        asyncio.run(test_direct_qwen_multi_turn(num_turns=3))
+    else:
+        # Run both tests
+        print("\n" + "#" * 80)
+        print("# RUNNING BOTH TESTS")
+        print("#" * 80)
+
+        print("\n\n>>> TEST 1: Direct Qwen responses (no ask_sonnet)")
+        asyncio.run(test_direct_qwen_multi_turn(num_turns=3))
+
+        print("\n\n>>> TEST 2: ask_sonnet delegated responses")
+        asyncio.run(test_ask_sonnet_multi_turn(num_turns=3))
