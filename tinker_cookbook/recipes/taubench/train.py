@@ -23,9 +23,9 @@ class CLIConfig:
     model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     renderer_name: str | None = None
     lora_rank: int = 32
-    group_size: int = 4
+    group_size: int = 8
     num_epochs: int = 10
-    batch_size: int = 8
+    batch_size: int = 16
     learning_rate: float = 5e-5
     max_tokens: int = 4096  # Tau2 conversations can be longer than 20 questions
     eval_every: int = 5  # Less frequent evals
