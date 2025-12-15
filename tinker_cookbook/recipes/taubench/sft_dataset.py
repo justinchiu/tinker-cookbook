@@ -13,6 +13,7 @@ from typing import cast
 import tau2.registry as reg
 
 import tinker
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode, get_ask_sonnet_renderer
 from tinker_cookbook.recipes.taubench.env import construct_tau2_env, ASK_SONNET_TOOL
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
@@ -25,20 +26,30 @@ def _inject_ask_sonnet_calls(
     messages: list[dict],
     injection_rate: float,
     rng: random.Random,
+    mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
 ) -> list[dict]:
     """Randomly inject ask_sonnet tool calls before assistant messages.
 
     For each assistant message (except the first), with probability `injection_rate`:
+
+    In DIRECT_INJECTION mode:
     - Insert an ask_sonnet tool call before it
     - Convert the original assistant message to a tool result (Sonnet's response)
+    - Teaches: ask_sonnet -> Sonnet responds with action -> done
+
+    In CONDITIONING mode:
+    - Insert an ask_sonnet tool call
+    - Insert synthesized advice as tool result (using ConditioningRenderer format)
+    - Keep original assistant message as policy's followup
+    - Teaches: ask_sonnet -> Sonnet gives advice -> policy acts
 
     The first assistant message is never replaced because the agent should
     greet the customer directly, not delegate the greeting.
-
-    This teaches the model: ask_sonnet -> Sonnet responds -> conversation continues
     """
     if injection_rate <= 0:
         return messages
+
+    renderer = get_ask_sonnet_renderer(mode)
 
     result = []
     is_first_assistant = True
@@ -65,30 +76,75 @@ def _inject_ask_sonnet_calls(
             }
             result.append(ask_sonnet_msg)
 
-            # Convert original assistant message to tool result (Sonnet's response)
-            # Serialize the original content (including any tool calls)
-            if msg.get("tool_calls"):
-                sonnet_response = json.dumps({
-                    "content": msg.get("content", ""),
-                    "tool_calls": [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        if hasattr(tc, 'function') else tc
-                        for tc in msg["tool_calls"]
-                    ]
-                })
+            if mode == AskSonnetMode.CONDITIONING:
+                # CONDITIONING: Sonnet gives advice, policy takes action
+                # Generate advice and format using ConditioningRenderer
+                advice = _generate_advice_for_action(msg)
+                tool_result_msg = renderer.format_sonnet_response_for_messages(advice)
+                result.append(tool_result_msg)
+                # Keep original assistant message as policy's followup
+                result.append(msg)
             else:
-                sonnet_response = msg.get("content", "")
+                # DIRECT_INJECTION: Sonnet's response IS the action
+                # Serialize the original content (including any tool calls)
+                if msg.get("tool_calls"):
+                    sonnet_response = json.dumps({
+                        "content": msg.get("content", ""),
+                        "tool_calls": [
+                            {"name": tc.function.name, "arguments": tc.function.arguments}
+                            if hasattr(tc, 'function') else tc
+                            for tc in msg["tool_calls"]
+                        ]
+                    })
+                else:
+                    sonnet_response = msg.get("content", "")
 
-            tool_result_msg = {
-                "role": "tool",
-                "content": sonnet_response,
-                "tool_call_id": "ask_sonnet_call",
-            }
-            result.append(tool_result_msg)
+                tool_result_msg = renderer.format_sonnet_response_for_messages(sonnet_response)
+                result.append(tool_result_msg)
         else:
             result.append(msg)
 
     return result
+
+
+def _generate_advice_for_action(msg: dict) -> str:
+    """Generate synthetic advice for what the assistant message does.
+
+    This creates training data for conditioning mode where Sonnet gives
+    advice and the policy decides what to do.
+    """
+    tool_calls = msg.get("tool_calls", [])
+    content = msg.get("content", "")
+
+    if tool_calls:
+        # Message has tool calls - generate advice about using tools
+        tool_names = []
+        for tc in tool_calls:
+            if hasattr(tc, 'function'):
+                tool_names.append(tc.function.name)
+            elif isinstance(tc, dict):
+                tool_names.append(tc.get("name", "unknown"))
+
+        if len(tool_names) == 1:
+            advice = f"I recommend using the {tool_names[0]} tool to help with this request."
+        else:
+            tools_str = ", ".join(tool_names[:-1]) + f" and {tool_names[-1]}"
+            advice = f"I recommend using the {tools_str} tools to gather the necessary information."
+
+    elif content:
+        # Text-only message - generate advice about communication
+        if "?" in content:
+            advice = "I recommend asking the customer for more information to clarify their request."
+        elif any(word in content.lower() for word in ["sorry", "apologize", "unfortunately"]):
+            advice = "I recommend explaining the situation clearly and apologizing for any inconvenience."
+        elif any(word in content.lower() for word in ["confirm", "verify", "check"]):
+            advice = "I recommend confirming the details with the customer before proceeding."
+        else:
+            advice = "I recommend responding to the customer with the appropriate information."
+    else:
+        advice = "I recommend proceeding with the customer's request."
+
+    return advice
 
 _TASK_SPLIT_CACHE: dict[tuple[str, str], set[str]] = {}
 
@@ -434,6 +490,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
     simulation_files: list[str]  # List of paths to simulation JSON files
     ask_sonnet_injection_rate: float = 0.0  # Rate at which to inject ask_sonnet calls (0.0 = disabled)
     ask_sonnet_injection_seed: int = 42  # Seed for reproducible injection
+    ask_sonnet_injection_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
         # Extract, normalize, and convert to Datum objects immediately
@@ -491,10 +548,18 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                     if self.ask_sonnet_injection_rate > 0:
                         pre_len = len(normalized)
                         normalized = _inject_ask_sonnet_calls(
-                            normalized, self.ask_sonnet_injection_rate, injection_rng
+                            normalized,
+                            self.ask_sonnet_injection_rate,
+                            injection_rng,
+                            mode=self.ask_sonnet_injection_mode,
                         )
-                        # Count injections (each injection adds 2 messages: ask_sonnet + tool result)
-                        injection_count += (len(normalized) - pre_len) // 2
+                        # Count injections
+                        # direct_injection: adds 2 messages (ask_sonnet + tool result), removes 1 = net +1
+                        # conditioning: adds 3 messages (ask_sonnet + tool result + followup), removes 1 = net +2
+                        if self.ask_sonnet_injection_mode == AskSonnetMode.CONDITIONING:
+                            injection_count += (len(normalized) - pre_len) // 2
+                        else:
+                            injection_count += len(normalized) - pre_len
 
                     # Convert to Datum immediately
                     tokens, weights = self.renderer.build_supervised_example(

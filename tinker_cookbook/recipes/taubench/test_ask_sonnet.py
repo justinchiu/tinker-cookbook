@@ -13,6 +13,7 @@ import logging
 import tau2.registry as reg
 import tinker
 
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode
 from tinker_cookbook.recipes.taubench.env import Tau2Env, ASK_SONNET_TOOL
 from tinker_cookbook.renderers import get_renderer, ToolCall
 from tinker_cookbook.tokenizer_utils import get_tokenizer
@@ -69,13 +70,13 @@ def print_messages(messages, title="MESSAGES"):
 
 
 def print_both_histories(env, title="MESSAGE HISTORIES"):
-    """Print both self.messages and self.external_llm_messages side by side."""
+    """Print both self.messages.messages and self.messages.external_messages side by side."""
     print("\n" + "=" * 80)
     print(title)
     print("=" * 80)
 
-    print_messages(env.messages, "self.messages (Qwen's view)")
-    print_messages(env.external_llm_messages, "self.external_llm_messages (Sonnet's view)")
+    print_messages(env.messages.messages, "self.messages.messages (Qwen's view)")
+    print_messages(env.messages.external_messages, "self.messages.external_messages (Sonnet's view)")
 
 
 def print_tool_call(tc: ToolCall, indent: str = "    "):
@@ -229,10 +230,10 @@ async def test_ask_sonnet(run_step: bool = False):
     print("\n[PASS] ask_sonnet tool is present")
 
     # Print messages before rendering
-    print_messages(env.messages, "MESSAGES IN ENV (before rendering)")
+    print_messages(env.messages.messages, "MESSAGES IN ENV (before rendering)")
 
     # Print rendered prompt with tools
-    print_rendered_prompt(renderer, tokenizer, env.messages, env.tools, "RENDERED PROMPT WITH TOOLS")
+    print_rendered_prompt(renderer, tokenizer, env.messages.messages, env.tools, "RENDERED PROMPT WITH TOOLS")
 
     # Get initial observation
     print("\n" + "-" * 80)
@@ -277,7 +278,7 @@ async def test_ask_sonnet(run_step: bool = False):
     print(f"  Next observation length: {result.next_observation.length} tokens")
 
     # Print messages after step
-    print_messages(env.messages, "MESSAGES AFTER STEP")
+    print_messages(env.messages.messages, "MESSAGES AFTER STEP")
 
     print("\n" + "=" * 80)
     print("[PASS] Test completed!")
@@ -369,7 +370,7 @@ async def test_direct_qwen_multi_turn(num_turns: int = 3):
             break
 
     print("\n" + "=" * 80)
-    print(f"FINAL: messages={len(env.messages)}, external={len(env.external_llm_messages)}")
+    print(f"FINAL: messages={len(env.messages.messages)}, external={len(env.messages.external_messages)}")
     print("Both should be EQUAL for direct responses")
     print("=" * 80)
 

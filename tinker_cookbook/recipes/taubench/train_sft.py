@@ -135,6 +135,7 @@ def main():
         common_config=common_config,
         simulation_files=SIMULATION_FILES,
         ask_sonnet_injection_rate=cli_config.ask_sonnet_injection_rate,
+        ask_sonnet_injection_mode=cli_config.ask_sonnet_mode,  # Use same mode for training data
     )
 
     # Auto-set external_llm_model if ask_sonnet injection is enabled but model not specified
