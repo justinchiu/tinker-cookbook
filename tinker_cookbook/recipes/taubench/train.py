@@ -14,6 +14,7 @@ from datetime import datetime
 
 import chz
 from tinker_cookbook import cli_utils, model_info
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode
 from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder
 from tinker_cookbook.rl import train
 
@@ -42,6 +43,7 @@ class CLIConfig:
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
     ask_sonnet_penalty: float = 0.1  # Penalty per ask_sonnet call
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION  # How ask_sonnet works
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -72,6 +74,7 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         external_llm_model=cli_config.external_llm_model,
         external_llm_temperature=cli_config.external_llm_temperature,
         external_llm_max_tokens=cli_config.external_llm_max_tokens,
+        ask_sonnet_mode=cli_config.ask_sonnet_mode,
         ask_sonnet_penalty=cli_config.ask_sonnet_penalty,
     )
 

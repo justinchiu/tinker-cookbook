@@ -18,6 +18,7 @@ from datetime import datetime
 
 import chz
 from tinker_cookbook import cli_utils, model_info
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode
 from tinker_cookbook.recipes.taubench.env import build_tau_eval_builders
 from tinker_cookbook.recipes.taubench.sft_dataset import (
     Tau2SimulationFilesBuilder,
@@ -81,6 +82,7 @@ class CLIConfig:
     external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION  # How ask_sonnet works
 
 
 def main():
@@ -157,6 +159,7 @@ def main():
         external_llm_model=external_llm_model,
         external_llm_temperature=cli_config.external_llm_temperature,
         external_llm_max_tokens=cli_config.external_llm_max_tokens,
+        ask_sonnet_mode=cli_config.ask_sonnet_mode,
     )
 
     # Build training config

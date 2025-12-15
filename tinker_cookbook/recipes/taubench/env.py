@@ -1,18 +1,45 @@
-import asyncio
-import gymnasium as gym
-from tau2.gym.gym_agent import AgentGymEnv
-from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
+"""Tau2 environment for RL training with optional ask_sonnet support."""
 
+import asyncio
 import json
 import logging
-import os
-import re
+import math
+from dataclasses import dataclass
+from typing import Literal, Sequence
 
-import litellm
+import chz
+import tau2.registry as reg
+from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
 
-# Configure LiteLLM (uses standard logging module, not loguru)
-litellm_logger = logging.getLogger("LiteLLM")
-litellm_logger.setLevel(logging.WARNING)  # Only show warnings and errors
+from tinker_cookbook import renderers
+from tinker_cookbook.completers import StopCondition
+from tinker_cookbook.eval.evaluators import EvaluatorBuilder
+from tinker_cookbook.model_info import get_recommended_renderer_name
+from tinker_cookbook.recipes.taubench.components import (
+    ActionParser,
+    AskSonnetMode,
+    AskSonnetRenderer,
+    ExternalLLMClient,
+    ExternalLLMConfig,
+    MessageManager,
+    ObservationType,
+    Tau2GymWrapper,
+    get_ask_sonnet_renderer,
+)
+from tinker_cookbook.renderers import Renderer, get_renderer
+from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
+from tinker_cookbook.rl.types import (
+    Action,
+    Env,
+    EnvGroupBuilder,
+    Observation,
+    RLDataset,
+    RLDatasetBuilder,
+    StepResult,
+)
+from tinker_cookbook.tokenizer_utils import get_tokenizer
+
+logger = logging.getLogger(__name__)
 
 # Special tool for delegating to external LLM
 ASK_SONNET_TOOL = {
@@ -23,75 +50,12 @@ ASK_SONNET_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {},
-            "required": []
-        }
-    }
+            "required": [],
+        },
+    },
 }
 
-logger = logging.getLogger(__name__)
-
-from tinker import ModelInput
-from tinker_cookbook.completers import StopCondition
-from tinker_cookbook.eval.evaluators import EvaluatorBuilder
-from tinker_cookbook.renderers import Message, Renderer, get_renderer
-from tinker_cookbook.tokenizer_utils import get_tokenizer
-from tinker_cookbook.model_info import get_recommended_renderer_name
-from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
-from tinker_cookbook.rl.types import (
-    Action,
-    Env,
-    Observation,
-    StepResult,
-)
-
-
-class Tau2Env(Env):
-    def __init__(
-        self,
-        renderer: Renderer,
-        domain: str,
-        task_id: str,
-        max_context_length: int | None = None,
-        external_llm_model: str | None = None,
-        external_llm_temperature: float = 0.0,
-        external_llm_max_tokens: int = 1024,
-    ):
-        self.renderer = renderer
-        self.domain = domain
-        self.task_id = task_id
-        self.max_context_length = max_context_length
-        self._context_exceeded = False
-
-        # External LLM configuration for ask_sonnet
-        self.external_llm_model = external_llm_model
-        self.external_llm_temperature = external_llm_temperature
-        self.external_llm_max_tokens = external_llm_max_tokens
-
-        # Separate message history for external LLM (keeps raw tool_calls with IDs)
-        # This is needed because Anthropic requires tool_use_id to match tool_result
-        self.external_llm_messages: list[dict] = []
-
-        # Track ask_sonnet calls for reward computation
-        self.ask_sonnet_call_count: int = 0
-
-        # Keeping the old Sonnet ID here for reference in case Tau2 toggles back:
-        # user_llm="claude-sonnet-4-5-20250929"
-        self.env = AgentGymEnv(
-            domain=domain,
-            task_id=task_id,
-            user_llm="gpt-4.1-2025-04-14",
-            user_llm_args={"temperature": 0.0, "max_tokens": 1024}
-        )
-        # Note: reset() is synchronous and may block, but we can't make __init__ async
-        # For now, we'll leave this as-is since it only happens once per env
-        obs, info = self.env.reset()
-
-        domain_policy = self.env._get_policy()
-        system_prompt = SYSTEM_PROMPT.format(domain_policy=domain_policy, agent_instruction=AGENT_INSTRUCTION)
-
-        # Add ask_sonnet instruction if external LLM is configured
-        if self.external_llm_model is not None:
-            ask_sonnet_instruction = """
+ASK_SONNET_INSTRUCTION = """
 
 IMPORTANT: You have access to a special tool called `ask_sonnet` that delegates the current turn to a more capable AI assistant (Claude Sonnet). Use this tool when:
 - You are unsure how to proceed with a complex request
@@ -102,54 +66,102 @@ IMPORTANT: You have access to a special tool called `ask_sonnet` that delegates 
 When you call `ask_sonnet`, Claude Sonnet will see the full conversation and respond on your behalf. Use this tool liberally when uncertain - it's better to ask for help than to make mistakes.
 
 NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonnet` for the initial greeting - handle it directly, then use `ask_sonnet` for subsequent turns if needed."""
-            system_prompt = system_prompt + ask_sonnet_instruction
 
-        # Get tools from tau2 gym and convert to standard OpenAI format
-        tools = self.env._get_tools()
-        tool_jsons = [x.model_dump_json() for x in tools]
-        tau2_tools = [json.loads(x) for x in tool_jsons]
 
-        # Convert tau2 format to OpenAI format
-        self.tools = []
-        for tool in tau2_tools:
-            openai_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("short_desc", "") or tool.get("long_desc", ""),
-                    "parameters": tool.get("params", {})
-                }
-            }
-            self.tools.append(openai_tool)
+class Tau2Env(Env):
+    """
+    Tau2 environment for RL training.
 
-        # Add ask_sonnet tool if external LLM is configured
-        if self.external_llm_model is not None:
+    Wraps the tau2 gym environment with:
+    - Proper message history management
+    - Optional ask_sonnet support (delegate to external LLM)
+    - Multiple ask_sonnet modes (direct injection, conditioning)
+    """
+
+    def __init__(
+        self,
+        renderer: Renderer,
+        domain: str,
+        task_id: str,
+        max_context_length: int | None = None,
+        # External LLM configuration
+        external_llm_model: str | None = None,
+        external_llm_temperature: float = 0.0,
+        external_llm_max_tokens: int = 1024,
+        # Ask sonnet mode
+        ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
+    ):
+        self.renderer = renderer
+        self.domain = domain
+        self.task_id = task_id
+        self.max_context_length = max_context_length
+        self._context_exceeded = False
+
+        # Track ask_sonnet calls for reward computation
+        self.ask_sonnet_call_count: int = 0
+
+        # State for conditioning mode
+        self._awaiting_followup = False
+        self._pending_sonnet_response: str | None = None
+
+        # Initialize tau2 gym wrapper
+        self.gym = Tau2GymWrapper(domain, task_id)
+
+        # Get initial observation and system prompt
+        initial_obs = self.gym.get_initial_observation()
+        domain_policy = self.gym.env._get_policy()
+        system_prompt = SYSTEM_PROMPT.format(
+            domain_policy=domain_policy,
+            agent_instruction=AGENT_INSTRUCTION,
+        )
+
+        # Get tools and add ask_sonnet if external LLM configured
+        self.tools = self.gym.get_tools()
+
+        # Setup external LLM if configured
+        self.external_llm: ExternalLLMClient | None = None
+        self.ask_sonnet_renderer: AskSonnetRenderer | None = None
+
+        if external_llm_model is not None:
+            # Add ask_sonnet instruction to system prompt
+            system_prompt = system_prompt + ASK_SONNET_INSTRUCTION
+
+            # Add ask_sonnet tool
             self.tools.append(ASK_SONNET_TOOL)
 
-        # Store messages without manually injecting tools - let the renderer handle it
-        # If obs is empty, tau2 expects agent to speak first - use placeholder for Sonnet
-        initial_user_content = obs if obs else "(Customer connected, please greet them)"
-        self.messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": initial_user_content},
-        ]
+            # Create external LLM client
+            self.external_llm = ExternalLLMClient(
+                ExternalLLMConfig(
+                    model=external_llm_model,
+                    temperature=external_llm_temperature,
+                    max_tokens=external_llm_max_tokens,
+                )
+            )
 
-        # Build system prompt for external LLM with tools injected (excluding ask_sonnet)
-        # This gives Sonnet the same view as Qwen - tools described in the prompt, not via API
-        external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
-        external_system_prompt = self._build_system_prompt_with_tools(system_prompt, external_tools)
+            # Create ask_sonnet renderer
+            self.ask_sonnet_renderer = get_ask_sonnet_renderer(ask_sonnet_mode)
 
-        # Initialize external LLM messages with tools-injected system prompt
-        self.external_llm_messages = [
-            {"role": "system", "content": external_system_prompt},
-            {"role": "user", "content": initial_user_content},
-        ]
+            # Build external system prompt with tools (excluding ask_sonnet)
+            external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
+            external_system_prompt = self._build_system_prompt_with_tools(
+                system_prompt, external_tools
+            )
+        else:
+            external_system_prompt = system_prompt
+
+        # Initialize action parser
+        self.action_parser = ActionParser(renderer)
+
+        # Initialize message manager
+        initial_user_content = initial_obs if initial_obs else "(Customer connected, please greet them)"
+        self.messages = MessageManager(
+            system_prompt=system_prompt,
+            external_system_prompt=external_system_prompt,
+            initial_user_content=initial_user_content,
+        )
 
     def _build_system_prompt_with_tools(self, system_prompt: str, tools: list[dict]) -> str:
-        """
-        Build a system prompt with tools described in text (same format as Qwen renderer).
-        This allows Sonnet to output tool calls as <tool_call> XML tags instead of using API tool_use.
-        """
+        """Build system prompt with tools described in text (for external LLM)."""
         tool_descriptions = []
         for tool in tools:
             func = tool.get("function", tool)
@@ -177,257 +189,120 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         return self.renderer.get_stop_sequences()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
-        # Return the initial observation as a tokenized prompt with tools injected
-        model_input = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
+        """Get the initial observation for the policy."""
+        model_input = self.renderer.build_generation_prompt(
+            self.messages.messages, tools=self.tools
+        )
         return model_input, self.stop_condition
 
-    async def _call_external_llm(self) -> dict:
-        """
-        Call external LLM (e.g., Sonnet) with the current conversation context.
-        Returns an assistant message dict with content (tool calls as <tool_call> tags in text).
-        Also updates self.external_llm_messages for future calls.
-
-        NOTE: We don't pass tools to the API. Instead, tools are described in the system prompt
-        (same as Qwen), so Sonnet outputs tool calls as <tool_call> XML tags in its text content.
-        This avoids format conversion issues between API tool_use and our XML format.
-        """
-        if self.external_llm_model is None:
-            raise ValueError("external_llm_model not configured but ask_sonnet was called")
-
-        # Simple message format - just role and content, no API tool_calls
-        # Tools are already described in the system prompt
-        messages_for_llm = []
-        for msg in self.external_llm_messages:
-            messages_for_llm.append({
-                "role": msg["role"],
-                "content": msg.get("content", ""),
-            })
-
-        logger.info(
-            "Calling external LLM (%s) with %d messages (tools in system prompt, not API)",
-            self.external_llm_model,
-            len(messages_for_llm),
-        )
-
-        try:
-            response = await litellm.acompletion(
-                model=self.external_llm_model,
-                messages=messages_for_llm,
-                # No tools parameter - tools are in the system prompt
-                max_tokens=self.external_llm_max_tokens,
-                temperature=self.external_llm_temperature,
-            )
-        except Exception as e:
-            # Print detailed debug info on error
-            print("\n" + "=" * 80)
-            print("ERROR calling external LLM - dumping messages:")
-            print("=" * 80)
-            for i, msg in enumerate(messages_for_llm):
-                print(f"\n--- Message {i} ---")
-                print(f"  role: {msg.get('role')}")
-                content = msg.get('content', '')
-                print(f"  content: {repr(content[:200])}..." if len(content) > 200 else f"  content: {repr(content)}")
-            print("=" * 80 + "\n")
-            raise
-
-        choice = response.choices[0]
-        content = choice.message.content or ""
-
-        # Store response in external_llm_messages for future calls
-        self.external_llm_messages.append({"role": "assistant", "content": content})
-        logger.info(
-            "Added Sonnet response to external_llm_messages (now %d messages)",
-            len(self.external_llm_messages),
-        )
-
-        # Return as assistant message - content already has <tool_call> tags if Sonnet made tool calls
-        result: dict = {"role": "assistant", "content": content}
-
-        logger.info(
-            "External LLM (%s) response: %s",
-            self.external_llm_model,
-            content[:100] + "..." if len(content) > 100 else content
-        )
-
-        return result
-
     async def step(self, action: Action) -> StepResult:
-        # Parse the action to get the assistant's message
-        assistant_message, parse_success = self.renderer.parse_response(action)
-
-        # Check if this is an ask_sonnet action - delegate to external LLM
-        # NOTE: Qwen3InstructRenderer.parse_response() does NOT populate tool_calls field,
-        # so we also need to check for <tool_call> tags in the content
-        sonnet_response = None
-        is_ask_sonnet = False
-
-        # Check 1: tool_calls field populated by renderer
-        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
-            tool_call = assistant_message["tool_calls"][0]
-            if tool_call.function.name == "ask_sonnet":
-                is_ask_sonnet = True
-
-        # Check 2: Look for "name": "ask_sonnet" anywhere in content
-        # This handles both <tool_call> wrapped JSON and raw JSON, with or without nested braces
-        if not is_ask_sonnet:
-            content = assistant_message.get("content", "")
-            # Simple check: just look for the ask_sonnet name pattern anywhere
-            if re.search(r'"name"\s*:\s*"ask_sonnet"', content):
-                is_ask_sonnet = True
-
-        if is_ask_sonnet:
-            logger.info("ask_sonnet called, delegating to external LLM")
-            self.ask_sonnet_call_count += 1
-
-            # Add the ask_sonnet call to messages first
-            self.messages.append(assistant_message)
-
-            # Call external LLM
-            sonnet_response = await self._call_external_llm()
-
-            # Add Sonnet's response as a tool result
-            tool_result_msg = {
-                "role": "tool",
-                "content": sonnet_response.get("content", ""),
-                "tool_call_id": "ask_sonnet_call",
-            }
-            self.messages.append(tool_result_msg)
-
-            # Use Sonnet's response for the tau2 gym action
-            assistant_message = sonnet_response
-
-        # Add assistant's response to conversation (if not ask_sonnet, which already added messages above)
-        if sonnet_response is None:
-            self.messages.append(assistant_message)
-            # Also add to external_llm_messages so Sonnet has full context if called later
-            # Store as plain text - content may include <tool_call> tags
-            self.external_llm_messages.append({
-                "role": "assistant",
-                "content": assistant_message.get("content", ""),
-            })
-
-        # Convert the assistant's response to the format expected by tau2 gym
-        # Tau2 gym expects either:
-        # - JSON format for tool calls: {"name": "tool_name", "arguments": {...}}
-        # - Plain text for messages
-
-        # Check for tool calls - either in tool_calls field (from renderer.parse_response)
-        # or in <tool_call> tags in content (from external LLM)
-        tool_call_match = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", assistant_message.get("content", ""), flags=re.DOTALL)
-
-        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
-            # From renderer.parse_response - pydantic ToolCall with nested function.name, function.arguments
-            tool_call = assistant_message["tool_calls"][0]
-            tau2_tool_call = {
-                "name": tool_call.function.name,
-                "arguments": json.loads(tool_call.function.arguments)
-            }
-            action_str = json.dumps(tau2_tool_call)
-        elif tool_call_match:
-            # From external LLM - <tool_call> tags in content
-            # Parse the JSON inside the tags (already has name + arguments)
-            action_str = tool_call_match.group(1)
-        else:
-            # Plain text - strip any <tool_call> tags just in case
-            action_str = re.sub(r"<tool_call>.*?</tool_call>", "", assistant_message.get("content", ""), flags=re.DOTALL).strip()
-
         """
-        # Debug: print what we're sending to tau2 gym
-        print(f"\n[DEBUG] Sending to tau2 gym:")
-        print(f"  action_str: {repr(action_str[:200])}..." if len(action_str) > 200 else f"  action_str: {repr(action_str)}")
-        print(f"  assistant_message has tool_calls: {'tool_calls' in assistant_message and assistant_message['tool_calls']}")
-        if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
-            print(f"  Number of tool_calls: {len(assistant_message['tool_calls'])}")
+        Step the environment with a policy action.
+
+        Handles:
+        - Regular actions (tool calls, text)
+        - ask_sonnet calls (delegate to external LLM)
+        - Conditioning mode followup
         """
+        # Handle conditioning mode followup
+        if self._awaiting_followup:
+            return await self._handle_followup(action)
 
-        # Step the gym environment (wrap in thread to avoid blocking)
-        obs, reward, terminated, truncated, info = await asyncio.to_thread(
-            self.env.step, action_str
-        )
+        # Parse action
+        parsed = self.action_parser.parse(action)
 
-        # Debug: log observation details
-        logger.info(
-            "Tau2 returned: obs=%r (len=%d), terminated=%s, truncated=%s",
-            obs[:100] + "..." if len(obs) > 100 else obs,
-            len(obs),
-            terminated,
-            truncated,
-        )
+        # Check for ask_sonnet
+        if self.action_parser.is_ask_sonnet(parsed) and self.external_llm is not None:
+            return await self._handle_ask_sonnet(parsed)
 
-        # Update conversation with new observation if there is one
-        if obs and not (terminated or truncated):
-            # Parse observation from tau2 gym format ("role: content")
-            # Observations can be:
-            # - "user: <text>" - user messages
-            # - "tool: {...}" - tool results
-            logger.info(
-                "Processing obs: starts_with_user=%s, starts_with_tool=%s",
-                obs.startswith("user: "),
-                obs.startswith("tool: "),
+        # Handle regular action
+        return await self._handle_regular_action(parsed)
+
+    async def _handle_ask_sonnet(self, parsed) -> StepResult:
+        """Handle an ask_sonnet call."""
+        logger.info("ask_sonnet called, delegating to external LLM")
+        self.ask_sonnet_call_count += 1
+
+        # Add ask_sonnet call to messages
+        self.messages.add_ask_sonnet_call(parsed.original_message)
+
+        # Call external LLM
+        external_messages = self.messages.get_external_messages_for_llm()
+        sonnet_response = await self.external_llm.call(external_messages)
+
+        # Add Sonnet's response using the renderer
+        self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
+
+        # Check if we should return early (conditioning mode)
+        if self.ask_sonnet_renderer.should_return_early():
+            self._awaiting_followup = True
+            self._pending_sonnet_response = sonnet_response
+
+            # Build observation for policy to see Sonnet's response
+            next_obs = self.renderer.build_generation_prompt(
+                self.messages.messages, tools=self.tools
             )
-            if obs.startswith("user: "):
-                user_content = obs[6:]  # Strip "user: " prefix
-                # Anthropic requires non-empty content
-                if not user_content:
-                    user_content = "(waiting)"
-                user_msg = {"role": "user", "content": user_content}
-                self.messages.append(user_msg)
-                self.external_llm_messages.append(user_msg)
-                logger.info(
-                    "Added user message to both histories (messages=%d, external=%d)",
-                    len(self.messages), len(self.external_llm_messages)
-                )
-            elif obs.startswith("tool: "):
-                tool_content = obs[6:]  # Strip "tool: " prefix
-
-                # Anthropic requires non-empty content for tool results
-                if not tool_content:
-                    tool_content = "(empty result)"
-
-                # For self.messages (Qwen's view), use tool role with tool_call_id
-                tool_msg = {
-                    "role": "tool",
-                    "content": tool_content,
-                    "tool_call_id": "tool_call",  # Generic ID since we use XML format
-                }
-                self.messages.append(tool_msg)
-
-                # For external_llm_messages (Sonnet's view), add as user message with tool result
-                # This matches the text-based format where tool results are shown inline
-                self.external_llm_messages.append({
-                    "role": "user",
-                    "content": f"[Tool Result]: {tool_content}",
-                })
-                logger.info(
-                    "Added tool result to both histories (messages=%d, external=%d)",
-                    len(self.messages), len(self.external_llm_messages)
-                )
-            else:
-                # Fallback: add as-is (shouldn't happen but just in case)
-                logger.warning(
-                    "Unexpected obs format (not user: or tool:): %r",
-                    obs[:100] + "..." if len(obs) > 100 else obs,
-                )
-                fallback_msg = {"role": "user", "content": obs}
-                self.messages.append(fallback_msg)
-                self.external_llm_messages.append(fallback_msg)
-        else:
-            # Log when we skip observation processing
-            logger.warning(
-                "Skipping obs processing: obs_empty=%s, terminated=%s, truncated=%s",
-                not obs,
-                terminated,
-                truncated,
+            return StepResult(
+                next_observation=next_obs,
+                next_stop_condition=self.stop_condition,
+                episode_done=False,
+                reward=0.0,
             )
 
-        # Build next observation with tools injected - always provide it (like twenty_questions)
-        next_obs = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
+        # Direct injection: use Sonnet's response as the action
+        action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
+        return await self._send_to_tau2(action_str)
 
-        # Check if context length exceeded
-        episode_done = terminated or truncated
+    async def _handle_followup(self, action: Action) -> StepResult:
+        """Handle policy's followup after ask_sonnet in conditioning mode."""
+        self._awaiting_followup = False
+
+        # Parse followup action
+        parsed = self.action_parser.parse(action)
+
+        # Add followup to messages
+        self.messages.add_assistant_message_dict(parsed.original_message, to_external=True)
+
+        # Get tau2 action from followup
+        action_str = self.ask_sonnet_renderer.get_tau2_action(
+            self._pending_sonnet_response,
+            parsed.original_message,
+        )
+        self._pending_sonnet_response = None
+
+        return await self._send_to_tau2(action_str)
+
+    async def _handle_regular_action(self, parsed) -> StepResult:
+        """Handle a regular action (not ask_sonnet)."""
+        # Add to messages
+        self.messages.add_assistant_message_dict(parsed.original_message, to_external=True)
+
+        # Convert to tau2 action
+        action_str = self.action_parser.to_tau2_action(parsed)
+
+        return await self._send_to_tau2(action_str)
+
+    async def _send_to_tau2(self, action_str: str) -> StepResult:
+        """Send action to tau2 gym and process the result."""
+        # Step the gym
+        result = await self.gym.step(action_str)
+
+        # Process observation
+        if result.raw_obs and not (result.terminated or result.truncated):
+            self._process_observation(result)
+
+        # Build next observation
+        next_obs = self.renderer.build_generation_prompt(
+            self.messages.messages, tools=self.tools
+        )
+
+        # Check context length
+        episode_done = result.terminated or result.truncated
+        reward = result.reward
+
         if self.max_context_length is not None and next_obs.length > self.max_context_length:
             logger.warning(
-                "Context length %d exceeded max %d for task %s, terminating episode with reward=0",
+                "Context length %d exceeded max %d for task %s, terminating",
                 next_obs.length,
                 self.max_context_length,
                 self.task_id,
@@ -436,93 +311,94 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             episode_done = True
             reward = 0.0
 
-        # Return step result
         return StepResult(
             next_observation=next_obs,
-            next_stop_condition=self.stop_condition,  # Always provide stop condition
+            next_stop_condition=self.stop_condition,
             episode_done=episode_done,
             reward=reward,
         )
 
+    def _process_observation(self, result) -> None:
+        """Process tau2 observation and update message histories."""
+        if result.obs_type == ObservationType.USER_MESSAGE:
+            self.messages.add_user(result.obs_content)
+        elif result.obs_type == ObservationType.TOOL_RESULT:
+            self.messages.add_tool_result(result.obs_content)
+        else:
+            # Fallback: treat as user message
+            self.messages.add_user(result.raw_obs)
 
-def construct_tau2_env(domain: str, task_id: str, model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"):
-    # Use a default model and renderer for now
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+
+
+def construct_tau2_env(
+    domain: str,
+    task_id: str,
+    model_name: str = "Qwen/Qwen3-30B-A3B-Instruct-2507",
+) -> Tau2Env:
+    """Construct a Tau2Env with default settings."""
     tokenizer = get_tokenizer(model_name)
     renderer_name = get_recommended_renderer_name(model_name)
     renderer = get_renderer(renderer_name, tokenizer)
     return Tau2Env(renderer, domain=domain, task_id=task_id)
 
 
-# Dataset classes following the twenty_questions pattern
-
-import math
-from dataclasses import dataclass
-from functools import partial
-from typing import Literal, Sequence
-
-import chz
-import tau2.registry as reg
-import tinker
-from tinker_cookbook import renderers
-from tinker_cookbook.rl.types import (
-    EnvGroupBuilder,
-    RLDataset,
-    RLDatasetBuilder,
-)
+# =============================================================================
+# Dataset classes
+# =============================================================================
 
 
 @dataclass(frozen=True)
 class Tau2EnvGroupBuilder(EnvGroupBuilder):
     """Group builder for tau2 environments."""
+
     domain: str
     task_id: str
     renderer: renderers.Renderer
     num_envs: int
-    actual_domain: str = None  # The real domain for when domain="all"
-    max_context_length: int | None = None  # Max context length before failing episode
-    # External LLM configuration for ask_sonnet
+    actual_domain: str = None
+    max_context_length: int | None = None
+    # External LLM configuration
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
-    # Penalty per ask_sonnet call (subtracted from reward)
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+    # Penalty per ask_sonnet call
     ask_sonnet_penalty: float = 0.0
 
     async def make_envs(self) -> Sequence[Env]:
-        """Create a group of tau2 environments with the same task.
-
-        Uses asyncio.to_thread to create envs in parallel since Tau2Env.__init__
-        blocks (it calls AgentGymEnv.reset() which starts a thread and waits).
-        """
-        # Use actual_domain if provided (for domain="all"), otherwise use domain
+        """Create a group of tau2 environments with the same task."""
         env_domain = self.actual_domain or self.domain
 
-        # Create envs in parallel using thread pool to avoid blocking the event loop
-        return list(await asyncio.gather(*[
-            asyncio.to_thread(
-                Tau2Env,
-                self.renderer,
-                env_domain,
-                self.task_id,
-                self.max_context_length,
-                self.external_llm_model,
-                self.external_llm_temperature,
-                self.external_llm_max_tokens,
+        return list(
+            await asyncio.gather(
+                *[
+                    asyncio.to_thread(
+                        Tau2Env,
+                        self.renderer,
+                        env_domain,
+                        self.task_id,
+                        self.max_context_length,
+                        self.external_llm_model,
+                        self.external_llm_temperature,
+                        self.external_llm_max_tokens,
+                        self.ask_sonnet_mode,
+                    )
+                    for _ in range(self.num_envs)
+                ]
             )
-            for _ in range(self.num_envs)
-        ]))
+        )
 
     async def compute_group_rewards(
         self, trajectory_group: list, env_group: Sequence[Env]
     ) -> list[tuple[float, dict]]:
-        """Compute rewards with penalty for ask_sonnet calls.
-
-        The penalty is subtracted from the final reward for each ask_sonnet call.
-        This encourages the model to learn to solve tasks itself rather than
-        always delegating to the external LLM.
-        """
+        """Compute rewards with penalty for ask_sonnet calls."""
         results = []
         for env in env_group:
-            tau2_env = env  # type: Tau2Env
+            tau2_env: Tau2Env = env
             ask_sonnet_count = tau2_env.ask_sonnet_call_count
             penalty = self.ask_sonnet_penalty * ask_sonnet_count
 
@@ -536,24 +412,24 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
 
     def logging_tags(self) -> list[str]:
         """Return tags for logging/aggregation."""
-        # Return task ID as tag for aggregating metrics
-        return ["tau2", self.domain, self.task_id[:20]]  # Truncate task ID if too long
+        return ["tau2", self.domain, self.task_id[:20]]
 
 
 @dataclass(frozen=True)
 class Tau2Dataset(RLDataset):
     """RL Dataset for tau2 environments."""
+
     tasks: list
     renderer: renderers.Renderer
     domain: str
     batch_size: int
     group_size: int
-    max_context_length: int | None = None  # Max context length before failing episode
-    # External LLM configuration for ask_sonnet
+    max_context_length: int | None = None
+    # External LLM configuration
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
-    # Penalty per ask_sonnet call
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
     ask_sonnet_penalty: float = 0.0
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -567,11 +443,12 @@ class Tau2Dataset(RLDataset):
                 task_id=task.id,
                 renderer=self.renderer,
                 num_envs=self.group_size,
-                actual_domain=getattr(task, '_actual_domain', None),  # Pass the actual domain if available
+                actual_domain=getattr(task, "_actual_domain", None),
                 max_context_length=self.max_context_length,
                 external_llm_model=self.external_llm_model,
                 external_llm_temperature=self.external_llm_temperature,
                 external_llm_max_tokens=self.external_llm_max_tokens,
+                ask_sonnet_mode=self.ask_sonnet_mode,
                 ask_sonnet_penalty=self.ask_sonnet_penalty,
             )
             for task in self.tasks[batch_start:batch_end]
@@ -585,6 +462,7 @@ class Tau2Dataset(RLDataset):
 @chz.chz
 class Tau2DatasetBuilder(RLDatasetBuilder):
     """Builder for tau2 RL datasets."""
+
     batch_size: int
     model_name_for_tokenizer: str
     renderer_name: str | None = None
@@ -592,20 +470,19 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
     seed: int = 0
     test_group_size: int = 1
-    num_epochs: int = 1  # Number of epochs to train for
-    max_context_length: int | None = 16384  # Fail episode if context exceeds this
-    # External LLM configuration for ask_sonnet
+    num_epochs: int = 1
+    max_context_length: int | None = 16384
+    # External LLM configuration
     external_llm_model: str | None = None
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
-    # Penalty per ask_sonnet call (subtracted from reward)
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
     ask_sonnet_penalty: float = 0.0
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
 
-        # Use recommended renderer if not specified
         if self.renderer_name is None:
             renderer_name = get_recommended_renderer_name(self.model_name_for_tokenizer)
         else:
@@ -613,13 +490,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
 
         renderer = renderers.get_renderer(renderer_name, tokenizer=tokenizer)
 
-        # Get tasks based on domain and task set
         train_tasks, test_tasks = self._get_train_and_test_tasks()
-
-        # Repeat tasks for num_epochs
         train_tasks_with_epochs = train_tasks * self.num_epochs
 
-        # Create train and test datasets
         train_dataset = Tau2Dataset(
             tasks=train_tasks_with_epochs,
             renderer=renderer,
@@ -630,6 +503,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             external_llm_model=self.external_llm_model,
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
+            ask_sonnet_mode=self.ask_sonnet_mode,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
         )
 
@@ -637,12 +511,13 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             tasks=test_tasks,
             renderer=renderer,
             domain=self.domain,
-            batch_size=len(test_tasks),  # Single batch for test
+            batch_size=len(test_tasks),
             group_size=self.test_group_size,
             max_context_length=self.max_context_length,
             external_llm_model=self.external_llm_model,
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
+            ask_sonnet_mode=self.ask_sonnet_mode,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
         )
 
@@ -650,6 +525,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
 
     def _get_train_and_test_tasks(self):
         """Get tasks for the specified domain, honoring official train/test splits."""
+        import random
 
         TRAIN_SPLIT = "train"
         TEST_SPLIT = "test"
@@ -692,8 +568,6 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             train_tasks.extend(load_tasks_for_domain(domain_name, TRAIN_SPLIT))
             test_tasks.extend(load_tasks_for_domain(domain_name, TEST_SPLIT))
 
-        import random
-
         rng = random.Random(self.seed)
         rng.shuffle(train_tasks)
         rng.shuffle(test_tasks)
@@ -723,6 +597,11 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         return train_tasks, test_tasks
 
 
+# =============================================================================
+# Evaluator builders
+# =============================================================================
+
+
 def build_tau_eval_builders(
     *,
     enabled: bool,
@@ -737,13 +616,13 @@ def build_tau_eval_builders(
     task_seed: int,
     eval_name: str,
     max_context_length: int | None = None,
-    # External LLM (ask_sonnet) configuration
+    # External LLM configuration
     external_llm_model: str | None = None,
     external_llm_temperature: float = 0.0,
     external_llm_max_tokens: int = 1024,
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
 ) -> list[EvaluatorBuilder]:
     """Construct Tau2 rollout evaluators for supervised recipes."""
-
     if not enabled:
         return []
 
@@ -759,9 +638,9 @@ def build_tau_eval_builders(
         external_llm_model=external_llm_model,
         external_llm_temperature=external_llm_temperature,
         external_llm_max_tokens=external_llm_max_tokens,
+        ask_sonnet_mode=ask_sonnet_mode,
     )
 
-    # Build datasets ahead of time so evaluator builders stay lightweight at runtime
     _, raw_test_dataset = asyncio.run(eval_dataset_builder())
     tasks = list(raw_test_dataset.tasks)
     if num_tasks is not None:
@@ -780,9 +659,9 @@ def build_tau_eval_builders(
         external_llm_model=external_llm_model,
         external_llm_temperature=external_llm_temperature,
         external_llm_max_tokens=external_llm_max_tokens,
+        ask_sonnet_mode=ask_sonnet_mode,
     )
 
-    logger = logging.getLogger(__name__)
     logger.info(
         "Enabling Tau2 rollout eval '%s' on %d tasks (domain=%s, group_size=%d)",
         eval_name,
