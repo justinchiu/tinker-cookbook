@@ -6,12 +6,9 @@ from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
 import json
 import logging
 import os
+import re
 
 import litellm
-
-from tinker_cookbook.recipes.taubench.message_converters import (
-    convert_messages_for_openai,
-)
 
 # Configure LiteLLM (uses standard logging module, not loguru)
 litellm_logger = logging.getLogger("LiteLLM")
@@ -137,11 +134,43 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             {"role": "user", "content": initial_user_content},
         ]
 
-        # Initialize external LLM messages with same initial state
+        # Build system prompt for external LLM with tools injected (excluding ask_sonnet)
+        # This gives Sonnet the same view as Qwen - tools described in the prompt, not via API
+        external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
+        external_system_prompt = self._build_system_prompt_with_tools(system_prompt, external_tools)
+
+        # Initialize external LLM messages with tools-injected system prompt
         self.external_llm_messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": external_system_prompt},
             {"role": "user", "content": initial_user_content},
         ]
+
+    def _build_system_prompt_with_tools(self, system_prompt: str, tools: list[dict]) -> str:
+        """
+        Build a system prompt with tools described in text (same format as Qwen renderer).
+        This allows Sonnet to output tool calls as <tool_call> XML tags instead of using API tool_use.
+        """
+        tool_descriptions = []
+        for tool in tools:
+            func = tool.get("function", tool)
+            name = func.get("name", "unknown")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+            tool_descriptions.append(
+                f"- {name}: {desc}\n  Parameters: {json.dumps(params, indent=2)}"
+            )
+        tools_text = "\n".join(tool_descriptions)
+
+        return f"""{system_prompt}
+
+# Available Tools
+
+You have access to the following tools. To use a tool, respond with a JSON object in the following format:
+<tool_call>
+{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
+</tool_call>
+
+{tools_text}"""
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -155,41 +184,36 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
     async def _call_external_llm(self) -> dict:
         """
         Call external LLM (e.g., Sonnet) with the current conversation context.
-        Returns an assistant message dict with content in Qwen format (tool calls as <tool_call> tags).
-        Also updates self.external_llm_messages with raw format for future calls.
+        Returns an assistant message dict with content (tool calls as <tool_call> tags in text).
+        Also updates self.external_llm_messages for future calls.
+
+        NOTE: We don't pass tools to the API. Instead, tools are described in the system prompt
+        (same as Qwen), so Sonnet outputs tool calls as <tool_call> XML tags in its text content.
+        This avoids format conversion issues between API tool_use and our XML format.
         """
         if self.external_llm_model is None:
             raise ValueError("external_llm_model not configured but ask_sonnet was called")
 
-        # Build tools for external LLM (excluding ask_sonnet)
-        external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
-
-        # Use external_llm_messages which preserves raw format (including tool_call IDs)
-        messages_for_llm = convert_messages_for_openai(self.external_llm_messages)
+        # Simple message format - just role and content, no API tool_calls
+        # Tools are already described in the system prompt
+        messages_for_llm = []
+        for msg in self.external_llm_messages:
+            messages_for_llm.append({
+                "role": msg["role"],
+                "content": msg.get("content", ""),
+            })
 
         logger.info(
-            "Calling external LLM (%s) with %d messages and %d tools",
+            "Calling external LLM (%s) with %d messages (tools in system prompt, not API)",
             self.external_llm_model,
             len(messages_for_llm),
-            len(external_tools),
         )
-        # Debug: log messages being sent with content details
-        for i, msg in enumerate(messages_for_llm):
-            content = msg.get("content")
-            content_preview = None
-            if content:
-                content_preview = content[:50] + "..." if len(content) > 50 else content
-            logger.debug(
-                "Message %d: role=%s, content=%r, has_tool_calls=%s",
-                i, msg.get("role"), content_preview,
-                "tool_calls" in msg and bool(msg.get("tool_calls"))
-            )
 
         try:
             response = await litellm.acompletion(
                 model=self.external_llm_model,
                 messages=messages_for_llm,
-                tools=external_tools if external_tools else None,
+                # No tools parameter - tools are in the system prompt
                 max_tokens=self.external_llm_max_tokens,
                 temperature=self.external_llm_temperature,
             )
@@ -201,67 +225,28 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             for i, msg in enumerate(messages_for_llm):
                 print(f"\n--- Message {i} ---")
                 print(f"  role: {msg.get('role')}")
-                content = msg.get('content')
-                if content is not None:
-                    print(f"  content type: {type(content).__name__}")
-                    print(f"  content empty: {not content}")
-                    print(f"  content repr: {repr(content[:200]) if len(str(content)) > 200 else repr(content)}")
-                else:
-                    print(f"  content: None")
-                if msg.get('tool_calls'):
-                    print(f"  tool_calls: {len(msg['tool_calls'])} calls")
-                    for j, tc in enumerate(msg['tool_calls']):
-                        print(f"    [{j}] id={tc.get('id')}, name={tc.get('function', {}).get('name')}")
-                if msg.get('tool_call_id'):
-                    print(f"  tool_call_id: {msg['tool_call_id']}")
+                content = msg.get('content', '')
+                print(f"  content: {repr(content[:200])}..." if len(content) > 200 else f"  content: {repr(content)}")
             print("=" * 80 + "\n")
             raise
 
         choice = response.choices[0]
-        message = choice.message
+        content = choice.message.content or ""
 
-        # Store raw response in external_llm_messages (preserves tool_calls with IDs)
-        # Convert litellm message to dict and fix empty content (Anthropic rejects empty content)
-        raw_message = message.model_dump()
-        if not raw_message.get("content") and raw_message.get("tool_calls"):
-            # Remove empty/None content for tool-call-only messages
-            raw_message.pop("content", None)
-        # Only keep the first tool call - tau2 gym processes one at a time, and Anthropic
-        # requires every tool_use to have a corresponding tool_result immediately after
-        if raw_message.get("tool_calls") and len(raw_message["tool_calls"]) > 1:
-            logger.warning(
-                "Sonnet made %d tool calls, keeping only the first one for external_llm_messages",
-                len(raw_message["tool_calls"])
-            )
-            raw_message["tool_calls"] = [raw_message["tool_calls"][0]]
-        self.external_llm_messages.append(raw_message)
+        # Store response in external_llm_messages for future calls
+        self.external_llm_messages.append({"role": "assistant", "content": content})
         logger.info(
-            "Added Sonnet response to external_llm_messages (now %d messages), has_tool_calls=%s",
+            "Added Sonnet response to external_llm_messages (now %d messages)",
             len(self.external_llm_messages),
-            bool(raw_message.get("tool_calls"))
         )
 
-        # Convert to Qwen format for training (tool calls as <tool_call> tags in content)
-        result: dict = {"role": "assistant", "content": message.content or ""}
-
-        if message.tool_calls:
-            tool_call_strs = []
-            for tc in message.tool_calls:
-                tool_call_dict = {
-                    "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments,
-                }
-                tool_call_strs.append(f"<tool_call>\n{json.dumps(tool_call_dict)}\n</tool_call>")
-
-            if result["content"]:
-                result["content"] = result["content"] + "\n" + "\n".join(tool_call_strs)
-            else:
-                result["content"] = "\n".join(tool_call_strs)
+        # Return as assistant message - content already has <tool_call> tags if Sonnet made tool calls
+        result: dict = {"role": "assistant", "content": content}
 
         logger.info(
             "External LLM (%s) response: %s",
             self.external_llm_model,
-            result["content"][:100] + "..." if len(result.get("content", "")) > 100 else result.get("content", "")
+            content[:100] + "..." if len(content) > 100 else content
         )
 
         return result
@@ -271,67 +256,60 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
         assistant_message, parse_success = self.renderer.parse_response(action)
 
         # Check if this is an ask_sonnet action - delegate to external LLM
+        # NOTE: Qwen3InstructRenderer.parse_response() does NOT populate tool_calls field,
+        # so we also need to check for <tool_call> tags in the content
         sonnet_response = None
+        is_ask_sonnet = False
+
+        # Check 1: tool_calls field populated by renderer
         if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
             tool_call = assistant_message["tool_calls"][0]
             if tool_call.function.name == "ask_sonnet":
-                logger.info("ask_sonnet called, delegating to external LLM")
-                self.ask_sonnet_call_count += 1
+                is_ask_sonnet = True
 
-                # Add the ask_sonnet call to messages first
-                self.messages.append(assistant_message)
+        # Check 2: Look for "name": "ask_sonnet" anywhere in content
+        # This handles both <tool_call> wrapped JSON and raw JSON, with or without nested braces
+        if not is_ask_sonnet:
+            content = assistant_message.get("content", "")
+            # Simple check: just look for the ask_sonnet name pattern anywhere
+            if re.search(r'"name"\s*:\s*"ask_sonnet"', content):
+                is_ask_sonnet = True
 
-                # Call external LLM
-                sonnet_response = await self._call_external_llm()
+        if is_ask_sonnet:
+            logger.info("ask_sonnet called, delegating to external LLM")
+            self.ask_sonnet_call_count += 1
 
-                # Add Sonnet's response as a tool result
-                tool_result_msg = {
-                    "role": "tool",
-                    "content": sonnet_response.get("content", ""),
-                    "tool_call_id": "ask_sonnet_call",
-                }
-                self.messages.append(tool_result_msg)
+            # Add the ask_sonnet call to messages first
+            self.messages.append(assistant_message)
 
-                # Use Sonnet's response for the tau2 gym action
-                assistant_message = sonnet_response
+            # Call external LLM
+            sonnet_response = await self._call_external_llm()
+
+            # Add Sonnet's response as a tool result
+            tool_result_msg = {
+                "role": "tool",
+                "content": sonnet_response.get("content", ""),
+                "tool_call_id": "ask_sonnet_call",
+            }
+            self.messages.append(tool_result_msg)
+
+            # Use Sonnet's response for the tau2 gym action
+            assistant_message = sonnet_response
 
         # Add assistant's response to conversation (if not ask_sonnet, which already added messages above)
         if sonnet_response is None:
             self.messages.append(assistant_message)
             # Also add to external_llm_messages so Sonnet has full context if called later
-            # Store in raw format (with tool_calls as dicts, not pydantic objects)
-            raw_assistant_msg = {"role": "assistant", "content": assistant_message.get("content", "")}
-            if "tool_calls" in assistant_message and assistant_message["tool_calls"]:
-                # Only keep the first tool call - tau2 gym processes one at a time, and Anthropic
-                # requires every tool_use to have a corresponding tool_result immediately after
-                tool_calls = assistant_message["tool_calls"]
-                if len(tool_calls) > 1:
-                    logger.warning(
-                        "Qwen made %d tool calls, keeping only the first one for external_llm_messages",
-                        len(tool_calls)
-                    )
-                    tool_calls = [tool_calls[0]]
-                raw_assistant_msg["tool_calls"] = [
-                    {
-                        "id": tc.id or f"call_{id(tc)}",
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        }
-                    }
-                    for tc in tool_calls
-                ]
-                # Remove empty content for tool-call messages (Anthropic requirement)
-                if not raw_assistant_msg["content"]:
-                    del raw_assistant_msg["content"]
-            self.external_llm_messages.append(raw_assistant_msg)
+            # Store as plain text - content may include <tool_call> tags
+            self.external_llm_messages.append({
+                "role": "assistant",
+                "content": assistant_message.get("content", ""),
+            })
 
         # Convert the assistant's response to the format expected by tau2 gym
         # Tau2 gym expects either:
         # - JSON format for tool calls: {"name": "tool_name", "arguments": {...}}
         # - Plain text for messages
-        import re
 
         # Check for tool calls - either in tool_calls field (from renderer.parse_response)
         # or in <tool_call> tags in content (from external LLM)
@@ -367,14 +345,14 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             self.env.step, action_str
         )
 
-        """
-        # Debug: print observation details
-        print(f"\n[DEBUG] Tau2 gym returned:")
-        print(f"  obs type: {type(obs)}")
-        print(f"  obs value: {repr(obs[:200])}..." if isinstance(obs, str) and len(obs) > 200 else f"  obs value: {repr(obs)}")
-        print(f"  reward: {reward}")
-        print(f"  terminated: {terminated}, truncated: {truncated}")
-        """
+        # Debug: log observation details
+        logger.info(
+            "Tau2 returned: obs=%r (len=%d), terminated=%s, truncated=%s",
+            obs[:100] + "..." if len(obs) > 100 else obs,
+            len(obs),
+            terminated,
+            truncated,
+        )
 
         # Update conversation with new observation if there is one
         if obs and not (terminated or truncated):
@@ -382,6 +360,11 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             # Observations can be:
             # - "user: <text>" - user messages
             # - "tool: {...}" - tool results
+            logger.info(
+                "Processing obs: starts_with_user=%s, starts_with_tool=%s",
+                obs.startswith("user: "),
+                obs.startswith("tool: "),
+            )
             if obs.startswith("user: "):
                 user_content = obs[6:]  # Strip "user: " prefix
                 # Anthropic requires non-empty content
@@ -397,34 +380,45 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
             elif obs.startswith("tool: "):
                 tool_content = obs[6:]  # Strip "tool: " prefix
 
-                # Get the tool_call_id from the raw external_llm_messages (has actual IDs)
-                tool_call_id = None
-                for msg in reversed(self.external_llm_messages):
-                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                        # Raw format from litellm has tool_calls as list of dicts
-                        tool_call_id = msg["tool_calls"][0].get("id")
-                        break
-
                 # Anthropic requires non-empty content for tool results
                 if not tool_content:
                     tool_content = "(empty result)"
 
+                # For self.messages (Qwen's view), use tool role with tool_call_id
                 tool_msg = {
                     "role": "tool",
                     "content": tool_content,
-                    "tool_call_id": tool_call_id or "unknown",
+                    "tool_call_id": "tool_call",  # Generic ID since we use XML format
                 }
                 self.messages.append(tool_msg)
-                self.external_llm_messages.append(tool_msg)
+
+                # For external_llm_messages (Sonnet's view), add as user message with tool result
+                # This matches the text-based format where tool results are shown inline
+                self.external_llm_messages.append({
+                    "role": "user",
+                    "content": f"[Tool Result]: {tool_content}",
+                })
                 logger.info(
-                    "Added tool result to both histories (messages=%d, external=%d), tool_call_id=%s",
-                    len(self.messages), len(self.external_llm_messages), tool_call_id
+                    "Added tool result to both histories (messages=%d, external=%d)",
+                    len(self.messages), len(self.external_llm_messages)
                 )
             else:
                 # Fallback: add as-is (shouldn't happen but just in case)
+                logger.warning(
+                    "Unexpected obs format (not user: or tool:): %r",
+                    obs[:100] + "..." if len(obs) > 100 else obs,
+                )
                 fallback_msg = {"role": "user", "content": obs}
                 self.messages.append(fallback_msg)
                 self.external_llm_messages.append(fallback_msg)
+        else:
+            # Log when we skip observation processing
+            logger.warning(
+                "Skipping obs processing: obs_empty=%s, terminated=%s, truncated=%s",
+                not obs,
+                terminated,
+                truncated,
+            )
 
         # Build next observation with tools injected - always provide it (like twenty_questions)
         next_obs = self.renderer.build_generation_prompt(self.messages, tools=self.tools)
