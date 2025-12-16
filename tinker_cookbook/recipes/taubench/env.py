@@ -16,6 +16,8 @@ from tinker_cookbook.completers import StopCondition
 from tinker_cookbook.eval.evaluators import EvaluatorBuilder
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.recipes.taubench.components import (
+    ASK_SONNET_INSTRUCTION,
+    ASK_SONNET_TOOL,
     ActionParser,
     AskSonnetMode,
     AskSonnetRenderer,
@@ -41,32 +43,6 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 logger = logging.getLogger(__name__)
-
-# Special tool for delegating to external LLM
-ASK_SONNET_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "ask_sonnet",
-        "description": "Delegate this turn to Claude Sonnet. Sonnet will see the full conversation and respond on your behalf.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-}
-
-ASK_SONNET_INSTRUCTION = """
-
-IMPORTANT: You have access to a special tool called `ask_sonnet` that delegates the current turn to a more capable AI assistant (Claude Sonnet). Use this tool when:
-- You are unsure how to proceed with a complex request
-- You need help understanding the customer's needs
-- You want to verify your approach before taking an action
-- The task requires careful reasoning or nuanced judgment
-
-When you call `ask_sonnet`, Claude Sonnet will see the full conversation and respond on your behalf. Use this tool liberally when uncertain - it's better to ask for help than to make mistakes.
-
-NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonnet` for the initial greeting - handle it directly, then use `ask_sonnet` for subsequent turns if needed."""
 
 
 class Tau2Env(Env):

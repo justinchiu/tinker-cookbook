@@ -14,8 +14,13 @@ from typing import cast
 import tau2.registry as reg
 
 import tinker
-from tinker_cookbook.recipes.taubench.components import AskSonnetMode, get_ask_sonnet_renderer
-from tinker_cookbook.recipes.taubench.env import construct_tau2_env, ASK_SONNET_TOOL
+from tinker_cookbook.recipes.taubench.components import (
+    ASK_SONNET_INSTRUCTION,
+    ASK_SONNET_TOOL,
+    AskSonnetMode,
+    get_ask_sonnet_renderer,
+)
+from tinker_cookbook.recipes.taubench.env import construct_tau2_env
 from tinker_cookbook import renderers
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
@@ -145,6 +150,76 @@ def _generate_advice_for_action(msg: dict) -> str:
             parts.append(f"<tool_call>\n{tool_json}\n</tool_call>")
 
     return "\n".join(parts) if parts else "Proceed with the customer's request."
+
+
+def _get_tau2_system_prompt(domain: str) -> str:
+    """Get the tau2 system prompt for a domain.
+
+    This builds the same system prompt used at inference time in env.py.
+    """
+    from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
+
+    # Get domain policy
+    try:
+        from tau2.gym.gym_agent import AgentGymEnv
+        # Create a temporary env to get the policy
+        tasks_loader = reg.registry.get_tasks_loader(domain)
+        tasks = tasks_loader()
+        if tasks:
+            task_id = tasks[0].id
+            env = AgentGymEnv(domain=domain, task_id=task_id)
+            env.reset()  # Must reset to initialize orchestrator
+            domain_policy = env._get_policy()
+        else:
+            domain_policy = ""
+    except Exception as e:
+        logger.warning(f"Could not get domain policy for {domain}: {e}")
+        domain_policy = ""
+
+    return SYSTEM_PROMPT.format(
+        domain_policy=domain_policy,
+        agent_instruction=AGENT_INSTRUCTION,
+    )
+
+
+# Cache for tau2 system prompts (one per domain)
+_TAU2_SYSTEM_PROMPT_CACHE: dict[str, str] = {}
+
+
+def _get_cached_tau2_system_prompt(domain: str) -> str:
+    """Get cached tau2 system prompt for a domain."""
+    if domain not in _TAU2_SYSTEM_PROMPT_CACHE:
+        _TAU2_SYSTEM_PROMPT_CACHE[domain] = _get_tau2_system_prompt(domain)
+    return _TAU2_SYSTEM_PROMPT_CACHE[domain]
+
+
+def _add_system_prompt_with_ask_sonnet(messages: list[dict], domain: str) -> list[dict]:
+    """Add tau2 system prompt with ASK_SONNET_INSTRUCTION.
+
+    Prepends a system message with:
+    1. The tau2 domain-specific system prompt
+    2. The ASK_SONNET_INSTRUCTION
+
+    If there's already a system message, replaces it.
+    """
+    if not messages:
+        return messages
+
+    # Build full system prompt
+    tau2_prompt = _get_cached_tau2_system_prompt(domain)
+    full_system_content = tau2_prompt + ASK_SONNET_INSTRUCTION
+
+    system_msg = {
+        "role": "system",
+        "content": full_system_content,
+    }
+
+    # Check if first message is system - replace it
+    if messages[0].get("role") == "system":
+        return [system_msg] + messages[1:]
+    else:
+        return [system_msg] + messages
+
 
 _TASK_SPLIT_CACHE: dict[tuple[str, str], set[str]] = {}
 
@@ -290,7 +365,7 @@ class DynamicInjectionDataset(SupervisedDataset):
             # Copy messages to avoid mutating original
             messages = [m.copy() for m in conv.messages]
 
-            # Inject ask_sonnet calls
+            # Inject ask_sonnet calls and add system prompt with instruction
             if self.injection_rate > 0:
                 messages = _inject_ask_sonnet_calls(
                     messages,
@@ -298,6 +373,8 @@ class DynamicInjectionDataset(SupervisedDataset):
                     rng,
                     mode=self.injection_mode,
                 )
+                # Add tau2 system prompt + ask_sonnet instruction
+                messages = _add_system_prompt_with_ask_sonnet(messages, conv.domain)
 
             # Render to tokens
             tools = self.domain_tools.get(conv.domain)

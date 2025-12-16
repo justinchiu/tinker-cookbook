@@ -81,21 +81,23 @@ def test_dynamic_injection_dataset():
     renderer_name = get_recommended_renderer_name(model_name)
     renderer = get_renderer(renderer_name, tokenizer)
 
-    # Create mock conversations
+    # Create mock conversations with real tau2 domain for system prompt
+    domain = "retail"  # Use real tau2 domain
     conversations = []
     for i in range(10):
         messages = create_mock_conversation(5)
         conv = ConversationRecord(
             messages=messages,
             task_id=f"task_{i}",
-            domain="mock",
+            domain=domain,
         )
         conversations.append(conv)
 
-    # Mock tools (just ask_sonnet)
-    domain_tools = {"mock": [ASK_SONNET_TOOL]}
+    # Get real tools from tau2
+    from tinker_cookbook.recipes.taubench.sft_dataset import _get_tau2_tools
+    domain_tools = {domain: _get_tau2_tools(domain) + [ASK_SONNET_TOOL]}
 
-    # Create dataset
+    # Create dataset with larger max_length to avoid truncation
     dataset = DynamicInjectionDataset(
         conversations=conversations,
         batch_size=2,
@@ -104,7 +106,7 @@ def test_dynamic_injection_dataset():
         domain_tools=domain_tools,
         injection_rate=0.5,
         injection_mode=AskSonnetMode.CONDITIONING,
-        max_length=4096,
+        max_length=16384,  # Large enough to avoid truncation
     )
 
     print(f"Dataset size: {len(dataset)} batches, {len(dataset.datums)} datums")
@@ -143,18 +145,20 @@ def test_batch_retrieval():
     renderer_name = get_recommended_renderer_name(model_name)
     renderer = get_renderer(renderer_name, tokenizer)
 
-    # Create mock conversations
+    # Create mock conversations with real tau2 domain
+    domain = "retail"
     conversations = []
     for i in range(10):
         messages = create_mock_conversation(3)
         conv = ConversationRecord(
             messages=messages,
             task_id=f"task_{i}",
-            domain="mock",
+            domain=domain,
         )
         conversations.append(conv)
 
-    domain_tools = {"mock": [ASK_SONNET_TOOL]}
+    from tinker_cookbook.recipes.taubench.sft_dataset import _get_tau2_tools
+    domain_tools = {domain: _get_tau2_tools(domain) + [ASK_SONNET_TOOL]}
 
     dataset = DynamicInjectionDataset(
         conversations=conversations,
@@ -164,7 +168,7 @@ def test_batch_retrieval():
         domain_tools=domain_tools,
         injection_rate=0.5,
         injection_mode=AskSonnetMode.CONDITIONING,
-        max_length=4096,
+        max_length=16384,
     )
 
     print(f"Dataset: {len(conversations)} conversations, batch_size=3, {len(dataset)} batches")
@@ -247,6 +251,42 @@ def test_conditioning_format():
     print("PASS: Conditioning format is correct")
 
 
+def test_system_prompt_with_tau2():
+    """Test that the tau2 system prompt is added with ask_sonnet instruction."""
+    print("\n" + "=" * 60)
+    print("TEST: Tau2 system prompt with ask_sonnet instruction")
+    print("=" * 60)
+
+    from tinker_cookbook.recipes.taubench.sft_dataset import (
+        _add_system_prompt_with_ask_sonnet,
+        _get_cached_tau2_system_prompt,
+    )
+    from tinker_cookbook.recipes.taubench.components import ASK_SONNET_INSTRUCTION
+
+    # Test with retail domain
+    domain = "retail"
+    messages = [
+        {"role": "assistant", "content": "Hello!"},
+        {"role": "user", "content": "I need help"},
+    ]
+
+    # Get tau2 system prompt
+    tau2_prompt = _get_cached_tau2_system_prompt(domain)
+    print(f"Tau2 system prompt length: {len(tau2_prompt)} chars")
+    print(f"First 200 chars: {tau2_prompt[:200]}...")
+
+    # Add system prompt with ask_sonnet
+    with_system = _add_system_prompt_with_ask_sonnet(messages.copy(), domain)
+
+    assert with_system[0]["role"] == "system", "First message should be system"
+    assert tau2_prompt in with_system[0]["content"], "Should contain tau2 system prompt"
+    assert "ask_sonnet" in with_system[0]["content"], "Should contain ask_sonnet instruction"
+    assert len(with_system) == len(messages) + 1, "Should have one more message (system)"
+
+    print(f"System message length: {len(with_system[0]['content'])} chars")
+    print("PASS: System prompt correctly includes tau2 prompt + ask_sonnet instruction")
+
+
 def main():
     print("Testing SFT Dataloader with Dynamic Injection")
     print("=" * 60)
@@ -255,6 +295,7 @@ def main():
     test_dynamic_injection_dataset()
     test_batch_retrieval()
     test_conditioning_format()
+    test_system_prompt_with_tau2()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")
