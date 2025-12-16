@@ -114,9 +114,8 @@ class Tau2Env(Env):
         self.tau2_user_output_tokens: int = 0
         self.tau2_user_cost_usd: float = 0.0
 
-        # State for conditioning mode
-        self._awaiting_followup = False
-        self._pending_sonnet_response: str | None = None
+        # Store ask_sonnet mode for step logic
+        self.ask_sonnet_mode = ask_sonnet_mode
 
         # Initialize tau2 gym wrapper
         self.gym = Tau2GymWrapper(domain, task_id)
@@ -213,96 +212,58 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         """
         Step the environment with a policy action.
 
-        Handles:
-        - Regular actions (tool calls, text)
-        - ask_sonnet calls (delegate to external LLM)
-        - Conditioning mode followup
+        Logic:
+        1. Parse action
+        2. If ask_sonnet + conditioning: call Sonnet, return observation (don't send to tau2)
+        3. If ask_sonnet + direct: call Sonnet, send Sonnet's response to tau2
+        4. Otherwise: send action to tau2
         """
         # Track policy output tokens (the action)
         action_tokens = action if isinstance(action, list) else []
         self.policy_output_tokens += len(action_tokens)
-
-        # Handle conditioning mode followup
-        if self._awaiting_followup:
-            return await self._handle_followup(action)
 
         # Parse action
         parsed = self.action_parser.parse(action)
 
         # Check for ask_sonnet
         if self.action_parser.is_ask_sonnet(parsed) and self.external_llm is not None:
-            return await self._handle_ask_sonnet(parsed)
+            logger.info("ask_sonnet called, delegating to external LLM")
+            self.ask_sonnet_call_count += 1
 
-        # Handle regular action
-        return await self._handle_regular_action(parsed)
+            # Add ask_sonnet call to messages
+            self.messages.add_ask_sonnet_call(parsed.original_message)
 
-    async def _handle_ask_sonnet(self, parsed) -> StepResult:
-        """Handle an ask_sonnet call."""
-        logger.info("ask_sonnet called, delegating to external LLM")
-        self.ask_sonnet_call_count += 1
+            # Call external LLM with usage tracking
+            external_messages = self.messages.get_external_messages_for_llm()
+            result = await self.external_llm.call_with_usage(external_messages)
+            sonnet_response = result.content
 
-        # Add ask_sonnet call to messages
-        self.messages.add_ask_sonnet_call(parsed.original_message)
+            # Track Sonnet token usage
+            self.sonnet_input_tokens += result.input_tokens
+            self.sonnet_output_tokens += result.output_tokens
 
-        # Call external LLM with usage tracking
-        external_messages = self.messages.get_external_messages_for_llm()
-        result = await self.external_llm.call_with_usage(external_messages)
-        sonnet_response = result.content
+            # Add Sonnet's response using the renderer
+            self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
 
-        # Track Sonnet token usage
-        self.sonnet_input_tokens += result.input_tokens
-        self.sonnet_output_tokens += result.output_tokens
+            if self.ask_sonnet_mode == AskSonnetMode.CONDITIONING:
+                # Conditioning: return observation, don't send to tau2
+                next_obs = self.renderer.build_generation_prompt(
+                    self.messages.messages, tools=self.tools
+                )
+                return StepResult(
+                    next_observation=next_obs,
+                    next_stop_condition=self.stop_condition,
+                    episode_done=False,
+                    reward=0.0,
+                )
+            else:
+                # Direct injection: send Sonnet's response to tau2
+                action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
+                return await self._send_to_tau2(action_str)
 
-        # Add Sonnet's response using the renderer
-        self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
-
-        # Check if we should return early (conditioning mode)
-        if self.ask_sonnet_renderer.should_return_early():
-            self._awaiting_followup = True
-            self._pending_sonnet_response = sonnet_response
-
-            # Build observation for policy to see Sonnet's response
-            next_obs = self.renderer.build_generation_prompt(
-                self.messages.messages, tools=self.tools
-            )
-            return StepResult(
-                next_observation=next_obs,
-                next_stop_condition=self.stop_condition,
-                episode_done=False,
-                reward=0.0,
-            )
-
-        # Direct injection: use Sonnet's response as the action
-        action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
-        return await self._send_to_tau2(action_str)
-
-    async def _handle_followup(self, action: Action) -> StepResult:
-        """Handle policy's followup after ask_sonnet in conditioning mode."""
-        self._awaiting_followup = False
-
-        # Parse followup action
-        parsed = self.action_parser.parse(action)
-
-        # Add followup to messages
+        # Not ask_sonnet: add to messages and send to tau2
         self.messages.add_assistant_message_dict(parsed.original_message, to_external=True)
-
-        # Get tau2 action from followup
-        action_str = self.ask_sonnet_renderer.get_tau2_action(
-            self._pending_sonnet_response,
-            parsed.original_message,
-        )
-        self._pending_sonnet_response = None
-
-        return await self._send_to_tau2(action_str)
-
-    async def _handle_regular_action(self, parsed) -> StepResult:
-        """Handle a regular action (not ask_sonnet)."""
-        # Add to messages
-        self.messages.add_assistant_message_dict(parsed.original_message, to_external=True)
-
-        # Convert to tau2 action
         action_str = self.action_parser.to_tau2_action(parsed)
-
         return await self._send_to_tau2(action_str)
 
     async def _send_to_tau2(self, action_str: str) -> StepResult:

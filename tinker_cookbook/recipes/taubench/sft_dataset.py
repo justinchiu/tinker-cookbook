@@ -7,6 +7,7 @@ import json
 import logging
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -15,6 +16,7 @@ import tau2.registry as reg
 import tinker
 from tinker_cookbook.recipes.taubench.components import AskSonnetMode, get_ask_sonnet_renderer
 from tinker_cookbook.recipes.taubench.env import construct_tau2_env, ASK_SONNET_TOOL
+from tinker_cookbook import renderers
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_tokens_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
@@ -238,6 +240,101 @@ class SimpleSupervisedDataset(SupervisedDataset):
 
     def __len__(self) -> int:
         return len(self.data) // self.batch_size
+
+
+@dataclass
+class ConversationRecord:
+    """Raw conversation data before injection/rendering."""
+    messages: list[dict]
+    task_id: str
+    domain: str
+
+
+class DynamicInjectionDataset(SupervisedDataset):
+    """Dataset that re-injects ask_sonnet calls with different randomization per epoch.
+
+    Unlike SimpleSupervisedDataset which stores pre-computed datums, this dataset
+    stores raw messages and re-injects + re-renders on each set_epoch() call.
+    This ensures different ask_sonnet injection patterns across epochs.
+    """
+
+    def __init__(
+        self,
+        conversations: list[ConversationRecord],
+        batch_size: int,
+        renderer: "renderers.Renderer",
+        train_on_what: TrainOnWhat,
+        domain_tools: dict[str, list[dict] | None],
+        injection_rate: float,
+        injection_mode: AskSonnetMode,
+        max_length: int | None,
+    ):
+        self.conversations = conversations
+        self.batch_size = batch_size
+        self.renderer = renderer
+        self.train_on_what = train_on_what
+        self.domain_tools = domain_tools
+        self.injection_rate = injection_rate
+        self.injection_mode = injection_mode
+        self.max_length = max_length
+
+        # Will be populated by set_epoch
+        self.datums: list[tinker.Datum] = []
+        # Initialize with epoch 0
+        self.set_epoch(0)
+
+    def _render_conversations(self, rng: random.Random) -> list[tinker.Datum]:
+        """Inject ask_sonnet and render all conversations with given RNG."""
+        datums = []
+        for conv in self.conversations:
+            # Copy messages to avoid mutating original
+            messages = [m.copy() for m in conv.messages]
+
+            # Inject ask_sonnet calls
+            if self.injection_rate > 0:
+                messages = _inject_ask_sonnet_calls(
+                    messages,
+                    self.injection_rate,
+                    rng,
+                    mode=self.injection_mode,
+                )
+
+            # Render to tokens
+            tools = self.domain_tools.get(conv.domain)
+            tokens, weights = self.renderer.build_supervised_example(
+                messages,
+                train_on_what=self.train_on_what,
+                tools=tools,
+            )
+            datum = datum_from_tokens_weights(tokens, weights, self.max_length)
+            datums.append(datum)
+
+        return datums
+
+    def get_batch(self, index: int) -> list[tinker.Datum]:
+        start = index * self.batch_size
+        end = min((index + 1) * self.batch_size, len(self.datums))
+        return self.datums[start:end]
+
+    def set_epoch(self, seed: int = 0):
+        """Re-inject and re-render with new randomization, then shuffle."""
+        # Use seed for both injection randomization and shuffle
+        injection_rng = random.Random(seed)
+        shuffle_rng = random.Random(seed + 1000000)  # Different seed for shuffle
+
+        # Re-render all conversations with new injection pattern
+        self.datums = self._render_conversations(injection_rng)
+
+        # Shuffle
+        shuffle_rng.shuffle(self.datums)
+
+        logger.info(
+            "Epoch %d: re-injected ask_sonnet calls and shuffled %d datums",
+            seed, len(self.datums)
+        )
+
+    def __len__(self) -> int:
+        return len(self.datums) // self.batch_size
 
 
 def _get_tau2_tools(domain: str, task_id: str | None = None) -> list[dict] | None:
@@ -483,36 +580,35 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
 
     This is useful when you want to train on specific simulation files
     from potentially different domains.
+
+    When ask_sonnet_injection_rate > 0, uses DynamicInjectionDataset which
+    re-randomizes injection patterns on each epoch.
     """
 
     simulation_files: list[str]  # List of paths to simulation JSON files
     ask_sonnet_injection_rate: float = 0.0  # Rate at which to inject ask_sonnet calls (0.0 = disabled)
-    ask_sonnet_injection_seed: int = 42  # Seed for reproducible injection
+    ask_sonnet_injection_seed: int = 42  # Seed for reproducible injection (unused with dynamic injection)
     ask_sonnet_injection_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
-        # Extract, normalize, and convert to Datum objects immediately
         train_on_what = (
             TrainOnWhat(self.common_config.train_on_what)
             if self.common_config.train_on_what
             else TrainOnWhat.ALL_ASSISTANT_MESSAGES
         )
 
-        # RNG for ask_sonnet injection
-        injection_rng = random.Random(self.ask_sonnet_injection_seed)
-
-        datums_by_domain: dict[str, list[tuple[tinker.Datum, str]]] = defaultdict(list)
-        domain_counts: dict[str, int] = defaultdict(int)
+        # Load and normalize all conversations, split by domain
+        conversations_by_domain: dict[str, list[tuple[ConversationRecord, str]]] = defaultdict(list)
         domain_tools: dict[str, list[dict] | None] = {}
-        injection_count = 0
-        total_assistant_msgs = 0
+        domain_counts: dict[str, int] = defaultdict(int)
 
         for sim_file in self.simulation_files:
             with open(sim_file, 'r') as f:
                 data = json.load(f)
 
-            # Track domain for logging
             file_domain = data['info']['environment_info']['domain_name']
+
+            # Load tools for this domain (once per domain)
             if file_domain not in domain_tools:
                 domain_tools[file_domain] = _get_tau2_tools(file_domain)
                 if domain_tools[file_domain]:
@@ -534,72 +630,90 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
 
             for sim in data['simulations']:
                 messages = sim['messages']
-                if messages:  # Skip empty conversations
-                    # Normalize messages
+                if messages:
                     normalized = _normalize_tau2_messages(messages)
-
-                    # Count assistant messages before injection
-                    assistant_count = sum(1 for m in normalized if m["role"] == "assistant")
-                    total_assistant_msgs += assistant_count
-
-                    # Inject ask_sonnet calls if enabled
-                    if self.ask_sonnet_injection_rate > 0:
-                        pre_len = len(normalized)
-                        normalized = _inject_ask_sonnet_calls(
-                            normalized,
-                            self.ask_sonnet_injection_rate,
-                            injection_rng,
-                            mode=self.ask_sonnet_injection_mode,
-                        )
-                        # Count injections
-                        # direct_injection: adds 2 messages (ask_sonnet + tool result), removes 1 = net +1
-                        # conditioning: adds 3 messages (ask_sonnet + tool result + followup), removes 1 = net +2
-                        if self.ask_sonnet_injection_mode == AskSonnetMode.CONDITIONING:
-                            injection_count += (len(normalized) - pre_len) // 2
-                        else:
-                            injection_count += len(normalized) - pre_len
-
-                    # Convert to Datum immediately
-                    tokens, weights = self.renderer.build_supervised_example(
-                        normalized,
-                        train_on_what=train_on_what,
-                        tools=domain_tools[file_domain]
+                    conv = ConversationRecord(
+                        messages=normalized,
+                        task_id=sim['task_id'],
+                        domain=file_domain,
                     )
-                    datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
-                    datums_by_domain[file_domain].append((datum, sim['task_id']))
+                    conversations_by_domain[file_domain].append((conv, sim['task_id']))
                     domain_counts[file_domain] += 1
 
-        total_datums = sum(domain_counts.values())
-        logger.info(f"Loaded {total_datums} conversations from {len(self.simulation_files)} files")
+        total_convs = sum(domain_counts.values())
+        logger.info(f"Loaded {total_convs} conversations from {len(self.simulation_files)} files")
         logger.info(f"Domain distribution: {dict(domain_counts)}")
 
-        if self.ask_sonnet_injection_rate > 0:
-            logger.info(
-                "ask_sonnet injection: %d/%d assistant turns replaced with ask_sonnet->tool_result (%.1f%% target rate)",
-                injection_count, total_assistant_msgs,
-                self.ask_sonnet_injection_rate * 100
-            )
+        # Split into train/test by task IDs
+        train_convs: list[ConversationRecord] = []
+        test_convs: list[ConversationRecord] = []
 
-        train_data: list[tinker.Datum] = []
-        test_data: list[tinker.Datum] = []
-        for domain_name, datums_with_tasks in datums_by_domain.items():
-            domain_train, domain_test = _split_datums_by_tasks(
-                datums_with_tasks,
-                domain_name,
-                True,
-                None,
-            )
-            train_data.extend(domain_train)
-            test_data.extend(domain_test)
+        for domain_name, convs_with_tasks in conversations_by_domain.items():
+            test_ids = _get_task_ids_for_split(domain_name, "test")
+            if test_ids:
+                domain_train = [conv for conv, task_id in convs_with_tasks if task_id not in test_ids]
+                domain_test = [conv for conv, task_id in convs_with_tasks if task_id in test_ids]
+                logger.info(
+                    "Domain '%s': %d train, %d test (official split)",
+                    domain_name, len(domain_train), len(domain_test)
+                )
+            else:
+                domain_train = [conv for conv, _ in convs_with_tasks]
+                domain_test = []
+                logger.info(
+                    "Domain '%s': %d train, no test split",
+                    domain_name, len(domain_train)
+                )
+            train_convs.extend(domain_train)
+            test_convs.extend(domain_test)
 
         logger.info(
-            "Combined domains: Train=%d examples, Test=%d examples",
-            len(train_data),
-            len(test_data),
+            "Combined domains: Train=%d conversations, Test=%d conversations",
+            len(train_convs), len(test_convs)
         )
 
-        return SimpleSupervisedDataset(
-            train_data, batch_size=self.common_config.batch_size
-        ), SimpleSupervisedDataset(
-            test_data, batch_size=self.common_config.batch_size
-        )
+        # Build datasets
+        if self.ask_sonnet_injection_rate > 0:
+            # Use dynamic injection dataset for training (re-randomizes each epoch)
+            logger.info(
+                "Using DynamicInjectionDataset with %.1f%% injection rate (randomized per epoch)",
+                self.ask_sonnet_injection_rate * 100
+            )
+            train_dataset = DynamicInjectionDataset(
+                conversations=train_convs,
+                batch_size=self.common_config.batch_size,
+                renderer=self.renderer,
+                train_on_what=train_on_what,
+                domain_tools=domain_tools,
+                injection_rate=self.ask_sonnet_injection_rate,
+                injection_mode=self.ask_sonnet_injection_mode,
+                max_length=self.common_config.max_length,
+            )
+        else:
+            # No injection - use simple pre-rendered dataset
+            train_datums = []
+            for conv in train_convs:
+                tools = domain_tools.get(conv.domain)
+                tokens, weights = self.renderer.build_supervised_example(
+                    conv.messages,
+                    train_on_what=train_on_what,
+                    tools=tools,
+                )
+                datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
+                train_datums.append(datum)
+            train_dataset = SimpleSupervisedDataset(train_datums, batch_size=self.common_config.batch_size)
+
+        # Test dataset never has injection (evaluate on clean data)
+        test_datums = []
+        for conv in test_convs:
+            tools = domain_tools.get(conv.domain)
+            tokens, weights = self.renderer.build_supervised_example(
+                conv.messages,
+                train_on_what=train_on_what,
+                tools=tools,
+            )
+            datum = datum_from_tokens_weights(tokens, weights, self.common_config.max_length)
+            test_datums.append(datum)
+        test_dataset = SimpleSupervisedDataset(test_datums, batch_size=self.common_config.batch_size)
+
+        return train_dataset, test_dataset

@@ -197,7 +197,9 @@ class ConditioningRenderer(AskSonnetRenderer):
         if qwen_followup is None:
             raise ValueError("Conditioning mode requires policy followup")
         content = qwen_followup.get("content", "")
-        return self._extract_action_from_content(content)
+        action = self._extract_action_from_content(content)
+        import ipdb; ipdb.set_trace()
+        return action
 
     def should_return_early(self) -> bool:
         """Return early to get policy's followup."""
