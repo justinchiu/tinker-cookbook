@@ -34,6 +34,7 @@ from datetime import datetime
 import chz
 import tinker
 from tinker_cookbook import model_info
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode, RolloutLogger
 from tinker_cookbook.recipes.taubench.env import Tau2Dataset, Tau2DatasetBuilder
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
 from tinker_cookbook.utils import logtree, ml_log
@@ -68,6 +69,12 @@ class CLIConfig:
     # Renderer override (usually auto-detected from model)
     renderer_name: str | None = None
 
+    # External LLM (ask_sonnet) configuration
+    external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
+    external_llm_temperature: float = 0.0
+    external_llm_max_tokens: int = 1024
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+
 
 async def run_evaluation(config: CLIConfig) -> dict[str, float]:
     """Run tau2 evaluation and return metrics."""
@@ -86,6 +93,8 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
     logger.info("Renderer: %s", renderer_name)
     logger.info("Temperature: %s", config.temperature)
     logger.info("Max tokens: %s", config.max_tokens)
+    if config.external_llm_model:
+        logger.info("External LLM: %s (mode=%s)", config.external_llm_model, config.ask_sonnet_mode.name)
     logger.info("=" * 60)
 
     # Build dataset
@@ -98,6 +107,10 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
         seed=config.task_seed,
         test_group_size=config.group_size,
         num_epochs=1,
+        external_llm_model=config.external_llm_model,
+        external_llm_temperature=config.external_llm_temperature,
+        external_llm_max_tokens=config.external_llm_max_tokens,
+        ask_sonnet_mode=config.ask_sonnet_mode,
     )
 
     _, raw_test_dataset = await dataset_builder()
@@ -112,6 +125,9 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
 
     logger.info("Evaluating on %d tasks", len(tasks))
 
+    # Create rollout logger if log_path specified
+    rollout_logger = RolloutLogger(log_dir=config.log_path, enabled=bool(config.log_path)) if config.log_path else None
+
     # Build final test dataset
     test_dataset = Tau2Dataset(
         tasks=tasks,
@@ -120,6 +136,11 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
         batch_size=min(len(tasks), config.batch_size),
         group_size=config.group_size,
         max_context_length=config.max_context_length,
+        external_llm_model=config.external_llm_model,
+        external_llm_temperature=config.external_llm_temperature,
+        external_llm_max_tokens=config.external_llm_max_tokens,
+        ask_sonnet_mode=config.ask_sonnet_mode,
+        rollout_logger=rollout_logger,
     )
 
     # Create sampling client
@@ -218,6 +239,10 @@ def main():
             "temperature": cli_config.temperature,
             "task_seed": cli_config.task_seed,
             "max_context_length": cli_config.max_context_length,
+            "external_llm_model": cli_config.external_llm_model,
+            "external_llm_temperature": cli_config.external_llm_temperature,
+            "external_llm_max_tokens": cli_config.external_llm_max_tokens,
+            "ask_sonnet_mode": cli_config.ask_sonnet_mode.name,
             "timestamp": datetime.now().isoformat(),
         }
         with open(config_path, "w") as f:

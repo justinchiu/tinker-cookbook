@@ -161,6 +161,7 @@ def main():
         external_llm_temperature=cli_config.external_llm_temperature,
         external_llm_max_tokens=cli_config.external_llm_max_tokens,
         ask_sonnet_mode=cli_config.ask_sonnet_mode,
+        log_dir=log_path,
     )
 
     # Build training config

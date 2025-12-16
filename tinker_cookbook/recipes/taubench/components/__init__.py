@@ -18,6 +18,7 @@ from tinker_cookbook.recipes.taubench.components.ask_sonnet_renderers import (
     ConditioningRenderer,
     get_ask_sonnet_renderer,
 )
+from tinker_cookbook.recipes.taubench.components.rollout_logger import RolloutLogger
 
 __all__ = [
     # Types
@@ -38,4 +39,6 @@ __all__ = [
     "DirectInjectionRenderer",
     "ConditioningRenderer",
     "get_ask_sonnet_renderer",
+    # Logging
+    "RolloutLogger",
 ]

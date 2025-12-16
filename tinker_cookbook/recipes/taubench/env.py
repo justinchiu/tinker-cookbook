@@ -23,6 +23,7 @@ from tinker_cookbook.recipes.taubench.components import (
     ExternalLLMConfig,
     MessageManager,
     ObservationType,
+    RolloutLogger,
     Tau2GymWrapper,
     get_ask_sonnet_renderer,
 )
@@ -90,9 +91,12 @@ class Tau2Env(Env):
         external_llm_max_tokens: int = 1024,
         # Ask sonnet mode
         ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
+        # Logging
+        rollout_logger: RolloutLogger | None = None,
     ):
         self.renderer = renderer
         self.domain = domain
+        self.rollout_logger = rollout_logger
         self.task_id = task_id
         self.max_context_length = max_context_length
         self._context_exceeded = False
@@ -336,6 +340,10 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             episode_done = True
             reward = 0.0
 
+        # Log episode if done
+        if episode_done:
+            self._log_episode(reward)
+
         return StepResult(
             next_observation=next_obs,
             next_stop_condition=self.stop_condition,
@@ -414,6 +422,26 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             "tau2_user_cost_usd": self.tau2_user_cost_usd,
         }
 
+    def _log_episode(self, reward: float) -> None:
+        """Log full conversation histories at episode end."""
+        if not self.rollout_logger:
+            return
+
+        metadata = {
+            "ask_sonnet_count": self.ask_sonnet_call_count,
+            "context_exceeded": self._context_exceeded,
+            **self.get_token_costs(),
+        }
+
+        self.rollout_logger.log_episode(
+            domain=self.domain,
+            task_id=self.task_id,
+            reward=reward,
+            messages=self.messages.messages,
+            external_messages=self.messages.external_messages,
+            metadata=metadata,
+        )
+
 
 # =============================================================================
 # Helper functions
@@ -458,6 +486,8 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
     tau2_user_cost_penalty: float = 0.0
+    # Logging
+    rollout_logger: RolloutLogger | None = None
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task."""
@@ -476,6 +506,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
                         self.external_llm_temperature,
                         self.external_llm_max_tokens,
                         self.ask_sonnet_mode,
+                        self.rollout_logger,
                     )
                     for _ in range(self.num_envs)
                 ]
@@ -548,6 +579,8 @@ class Tau2Dataset(RLDataset):
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
     tau2_user_cost_penalty: float = 0.0
+    # Logging
+    rollout_logger: RolloutLogger | None = None
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -570,6 +603,7 @@ class Tau2Dataset(RLDataset):
                 sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
                 tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
                 tau2_user_cost_penalty=self.tau2_user_cost_penalty,
+                rollout_logger=self.rollout_logger,
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -750,6 +784,8 @@ def build_tau_eval_builders(
     external_llm_temperature: float = 0.0,
     external_llm_max_tokens: int = 1024,
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
+    # Logging
+    log_dir: str | None = None,
 ) -> list[EvaluatorBuilder]:
     """Construct Tau2 rollout evaluators for supervised recipes."""
     if not enabled:
@@ -778,6 +814,9 @@ def build_tau_eval_builders(
     if not tasks:
         raise ValueError("Tau2 evaluation enabled but no tasks were loaded.")
 
+    # Create rollout logger if log_dir specified
+    rollout_logger = RolloutLogger(log_dir=log_dir, enabled=bool(log_dir)) if log_dir else None
+
     eval_dataset = Tau2Dataset(
         tasks=tasks,
         renderer=raw_test_dataset.renderer,
@@ -789,6 +828,7 @@ def build_tau_eval_builders(
         external_llm_temperature=external_llm_temperature,
         external_llm_max_tokens=external_llm_max_tokens,
         ask_sonnet_mode=ask_sonnet_mode,
+        rollout_logger=rollout_logger,
     )
 
     logger.info(
