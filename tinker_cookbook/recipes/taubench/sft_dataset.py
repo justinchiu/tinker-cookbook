@@ -37,10 +37,11 @@ def _inject_ask_sonnet_calls(
 ) -> list[dict]:
     """Randomly inject ask_sonnet tool calls before assistant messages.
 
-    For each assistant message (except the first), with probability `injection_rate`:
+    First samples a binary mask for all eligible assistant turns (excluding the first),
+    then applies the injection. This ensures clean sampling without weird consecutive patterns.
 
     In DIRECT_INJECTION mode:
-    - Insert an ask_sonnet tool call before it
+    - Insert an ask_sonnet tool call before the assistant message
     - Convert the original assistant message to a tool result (Sonnet's response)
     - Teaches: ask_sonnet -> Sonnet responds with action -> done
 
@@ -56,18 +57,29 @@ def _inject_ask_sonnet_calls(
     if injection_rate <= 0:
         return messages
 
-    renderer = get_ask_sonnet_renderer(mode)
-
-    result = []
+    # Find indices of eligible assistant messages (all except first)
+    eligible_indices = []
     is_first_assistant = True
-    for msg in messages:
-        # Skip first assistant message - agent should greet directly
-        if msg["role"] == "assistant" and is_first_assistant:
-            is_first_assistant = False
-            result.append(msg)
-            continue
+    for i, msg in enumerate(messages):
+        if msg["role"] == "assistant":
+            if is_first_assistant:
+                is_first_assistant = False
+            else:
+                eligible_indices.append(i)
 
-        if msg["role"] == "assistant" and rng.random() < injection_rate:
+    if not eligible_indices:
+        return messages
+
+    # Sample binary mask for eligible turns
+    inject_mask = [rng.random() < injection_rate for _ in eligible_indices]
+    inject_set = {idx for idx, do_inject in zip(eligible_indices, inject_mask) if do_inject}
+
+    # Build result with injections
+    renderer = get_ask_sonnet_renderer(mode)
+    result = []
+
+    for i, msg in enumerate(messages):
+        if i in inject_set:
             # Insert ask_sonnet call
             ask_sonnet_msg = {
                 "role": "assistant",
@@ -85,7 +97,6 @@ def _inject_ask_sonnet_calls(
 
             if mode == AskSonnetMode.CONDITIONING:
                 # CONDITIONING: Sonnet gives advice, policy takes action
-                # Generate advice and format using ConditioningRenderer
                 advice = _generate_advice_for_action(msg)
                 tool_result_msg = renderer.format_sonnet_response_for_messages(advice)
                 result.append(tool_result_msg)
@@ -93,7 +104,6 @@ def _inject_ask_sonnet_calls(
                 result.append(msg)
             else:
                 # DIRECT_INJECTION: Sonnet's response IS the action
-                # Serialize the original content (including any tool calls)
                 if msg.get("tool_calls"):
                     sonnet_response = json.dumps({
                         "content": msg.get("content", ""),
