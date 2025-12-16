@@ -44,6 +44,10 @@ class CLIConfig:
     external_llm_max_tokens: int = 1024
     ask_sonnet_penalty: float = 0.1  # Penalty per ask_sonnet call
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION  # How ask_sonnet works
+    # Optional token/cost penalties (applied to final reward)
+    sonnet_token_penalty_per_1k: float = 0.0
+    tau2_user_token_penalty_per_1k: float = 0.0
+    tau2_user_cost_penalty: float = 0.0
 
 
 def build_config(cli_config: CLIConfig) -> train.Config:
@@ -76,6 +80,9 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         external_llm_max_tokens=cli_config.external_llm_max_tokens,
         ask_sonnet_mode=cli_config.ask_sonnet_mode,
         ask_sonnet_penalty=cli_config.ask_sonnet_penalty,
+        sonnet_token_penalty_per_1k=cli_config.sonnet_token_penalty_per_1k,
+        tau2_user_token_penalty_per_1k=cli_config.tau2_user_token_penalty_per_1k,
+        tau2_user_cost_penalty=cli_config.tau2_user_cost_penalty,
     )
 
     return train.Config(

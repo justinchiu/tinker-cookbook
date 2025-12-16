@@ -1,12 +1,22 @@
 """ExternalLLMClient - Handles external LLM (e.g., Sonnet) interactions."""
 
 import logging
+from dataclasses import dataclass
 
 import litellm
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from tinker_cookbook.recipes.taubench.components.types import ExternalLLMConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMCallResult:
+    """Result from an LLM call including content and token usage."""
+    content: str
+    input_tokens: int
+    output_tokens: int
 
 
 class ExternalLLMClient:
@@ -37,6 +47,29 @@ class ExternalLLMClient:
         Returns:
             Response content string
         """
+        result = await self.call_with_usage(messages)
+        return result.content
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((litellm.InternalServerError, litellm.RateLimitError)),
+        before_sleep=lambda retry_state: logger.warning(
+            "Retrying external LLM call (attempt %d) after error: %s",
+            retry_state.attempt_number,
+            retry_state.outcome.exception() if retry_state.outcome else "unknown",
+        ),
+    )
+    async def call_with_usage(self, messages: list[dict]) -> LLMCallResult:
+        """
+        Call the external LLM and return content with token usage.
+
+        Args:
+            messages: List of message dicts (role, content)
+
+        Returns:
+            LLMCallResult with content and token counts
+        """
         logger.info(
             "Calling external LLM (%s) with %d messages",
             self.model,
@@ -50,19 +83,32 @@ class ExternalLLMClient:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
+        except (litellm.InternalServerError, litellm.RateLimitError):
+            raise  # Let tenacity handle these
         except Exception as e:
             self._log_error(messages, e)
             raise
 
         content = response.choices[0].message.content or ""
 
+        # Extract token usage
+        usage = response.usage
+        input_tokens = usage.prompt_tokens if usage else 0
+        output_tokens = usage.completion_tokens if usage else 0
+
         logger.info(
-            "External LLM (%s) response: %s",
+            "External LLM (%s) response: %s (in=%d, out=%d tokens)",
             self.model,
-            content[:100] + "..." if len(content) > 100 else content
+            content[:100] + "..." if len(content) > 100 else content,
+            input_tokens,
+            output_tokens,
         )
 
-        return content
+        return LLMCallResult(
+            content=content,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     def _log_error(self, messages: list[dict], error: Exception) -> None:
         """Log detailed error info for debugging."""

@@ -10,7 +10,7 @@ from tinker_cookbook.recipes.taubench.components.types import (
 )
 from tinker_cookbook.recipes.taubench.components.action_parser import ActionParser
 from tinker_cookbook.recipes.taubench.components.message_manager import MessageManager
-from tinker_cookbook.recipes.taubench.components.external_llm import ExternalLLMClient
+from tinker_cookbook.recipes.taubench.components.external_llm import ExternalLLMClient, LLMCallResult
 from tinker_cookbook.recipes.taubench.components.tau2_gym_wrapper import Tau2GymWrapper
 from tinker_cookbook.recipes.taubench.components.ask_sonnet_renderers import (
     AskSonnetRenderer,
@@ -27,6 +27,7 @@ __all__ = [
     "ParsedAction",
     "Tau2StepResult",
     "ExternalLLMConfig",
+    "LLMCallResult",
     # Components
     "ActionParser",
     "MessageManager",

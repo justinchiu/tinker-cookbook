@@ -108,43 +108,41 @@ def _inject_ask_sonnet_calls(
 
 
 def _generate_advice_for_action(msg: dict) -> str:
-    """Generate synthetic advice for what the assistant message does.
+    """Generate advice by copying the full next assistant message in Qwen format.
 
-    This creates training data for conditioning mode where Sonnet gives
-    advice and the policy decides what to do.
+    For conditioning mode, Sonnet's advice is the complete action the policy
+    should take. This teaches the model to follow Sonnet's recommendations.
+    Tool calls are wrapped in <tool_call> tags per Qwen format.
     """
     tool_calls = msg.get("tool_calls", [])
     content = msg.get("content", "")
 
+    parts = []
+
+    # Include text content if present
+    if content:
+        parts.append(content)
+
+    # Include tool calls in Qwen <tool_call> format
     if tool_calls:
-        # Message has tool calls - generate advice about using tools
-        tool_names = []
         for tc in tool_calls:
             if hasattr(tc, 'function'):
-                tool_names.append(tc.function.name)
+                # ToolCall object
+                tool_json = json.dumps({
+                    "name": tc.function.name,
+                    "arguments": json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
+                })
             elif isinstance(tc, dict):
-                tool_names.append(tc.get("name", "unknown"))
+                # Dict format
+                tool_json = json.dumps({
+                    "name": tc.get("name", tc.get("function", {}).get("name", "unknown")),
+                    "arguments": tc.get("arguments", tc.get("function", {}).get("arguments", {}))
+                })
+            else:
+                continue
+            parts.append(f"<tool_call>\n{tool_json}\n</tool_call>")
 
-        if len(tool_names) == 1:
-            advice = f"I recommend using the {tool_names[0]} tool to help with this request."
-        else:
-            tools_str = ", ".join(tool_names[:-1]) + f" and {tool_names[-1]}"
-            advice = f"I recommend using the {tools_str} tools to gather the necessary information."
-
-    elif content:
-        # Text-only message - generate advice about communication
-        if "?" in content:
-            advice = "I recommend asking the customer for more information to clarify their request."
-        elif any(word in content.lower() for word in ["sorry", "apologize", "unfortunately"]):
-            advice = "I recommend explaining the situation clearly and apologizing for any inconvenience."
-        elif any(word in content.lower() for word in ["confirm", "verify", "check"]):
-            advice = "I recommend confirming the details with the customer before proceeding."
-        else:
-            advice = "I recommend responding to the customer with the appropriate information."
-    else:
-        advice = "I recommend proceeding with the customer's request."
-
-    return advice
+    return "\n".join(parts) if parts else "Proceed with the customer's request."
 
 _TASK_SPLIT_CACHE: dict[tuple[str, str], set[str]] = {}
 

@@ -58,7 +58,7 @@ async def test_taubench_sampling(config: Config):
     env = construct_tau2_env(domain=config.domain, task_id=task_id, model_name=config.model_name)
 
     print("\nInitial messages in env:")
-    for i, msg in enumerate(env.messages):
+    for i, msg in enumerate(env.messages.messages):
         role = msg["role"]
         content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
         print(f"  Message {i} ({role}): {content}")
@@ -67,12 +67,9 @@ async def test_taubench_sampling(config: Config):
     print("\n" + "=" * 80)
     print("AVAILABLE TOOLS")
     print("=" * 80)
-    tools = env.env._get_tools()
-    print(f"Total tools available: {len(tools)}")
-    for tool in tools:
-        print(f"\n- {tool.name}")
-        desc = tool._get_description() if hasattr(tool, '_get_description') else str(tool)
-        print(f"  Description: {desc[:100]}..." if len(desc) > 100 else f"  Description: {desc}")
+    print(f"Total tools available: {len(env.tools)}")
+    for tool in env.tools:
+        print(f"  - {tool['function']['name']}")
     print("=" * 80)
 
     # Create sampling client
@@ -193,7 +190,7 @@ async def test_taubench_sampling(config: Config):
     print(f"\n" + "-" * 80)
     print("Updated conversation in env:")
     print("-" * 80)
-    for i, msg in enumerate(env.messages):
+    for i, msg in enumerate(env.messages.messages):
         role = msg["role"]
         content = msg.get("content", "")[:100] + "..." if len(msg.get("content", "")) > 100 else msg.get("content", "")
         has_tool_calls = "tool_calls" in msg
@@ -247,14 +244,14 @@ async def test_taubench_sampling(config: Config):
     print(f"  - Model correctly generated responses")
     print(f"  - Environment stepped through {step_num - 1} turns")
     print(f"  - Episode {'completed' if current_result.episode_done else 'still running (hit max steps)'}")
-    print(f"  - Final conversation has {len(env.messages)} messages")
+    print(f"  - Final conversation has {len(env.messages.messages)} messages")
     print(f"  - Final reward: {current_result.reward}")
 
     # Print full conversation
     print("\n" + "=" * 80)
     print("FULL CONVERSATION")
     print("=" * 80)
-    for i, msg in enumerate(env.messages):
+    for i, msg in enumerate(env.messages.messages):
         role = msg["role"]
         content = msg.get("content", "")
         tool_calls = msg.get("tool_calls", [])

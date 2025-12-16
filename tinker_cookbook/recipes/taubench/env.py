@@ -100,6 +100,16 @@ class Tau2Env(Env):
         # Track ask_sonnet calls for reward computation
         self.ask_sonnet_call_count: int = 0
 
+        # Token cost tracking
+        self.sonnet_input_tokens: int = 0
+        self.sonnet_output_tokens: int = 0
+        self.policy_input_tokens: int = 0
+        self.policy_output_tokens: int = 0
+        # Tau2 user-simulator token/cost tracking (available only once episode terminates)
+        self.tau2_user_input_tokens: int = 0
+        self.tau2_user_output_tokens: int = 0
+        self.tau2_user_cost_usd: float = 0.0
+
         # State for conditioning mode
         self._awaiting_followup = False
         self._pending_sonnet_response: str | None = None
@@ -204,6 +214,10 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         - ask_sonnet calls (delegate to external LLM)
         - Conditioning mode followup
         """
+        # Track policy output tokens (the action)
+        action_tokens = action if isinstance(action, list) else []
+        self.policy_output_tokens += len(action_tokens)
+
         # Handle conditioning mode followup
         if self._awaiting_followup:
             return await self._handle_followup(action)
@@ -226,9 +240,14 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         # Add ask_sonnet call to messages
         self.messages.add_ask_sonnet_call(parsed.original_message)
 
-        # Call external LLM
+        # Call external LLM with usage tracking
         external_messages = self.messages.get_external_messages_for_llm()
-        sonnet_response = await self.external_llm.call(external_messages)
+        result = await self.external_llm.call_with_usage(external_messages)
+        sonnet_response = result.content
+
+        # Track Sonnet token usage
+        self.sonnet_input_tokens += result.input_tokens
+        self.sonnet_output_tokens += result.output_tokens
 
         # Add Sonnet's response using the renderer
         self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
@@ -296,9 +315,15 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             self.messages.messages, tools=self.tools
         )
 
+        # Track policy input tokens (the observation/prompt length)
+        self.policy_input_tokens += next_obs.length
+
         # Check context length
         episode_done = result.terminated or result.truncated
         reward = result.reward
+
+        if episode_done:
+            self._maybe_capture_tau2_user_costs(result.info)
 
         if self.max_context_length is not None and next_obs.length > self.max_context_length:
             logger.warning(
@@ -327,6 +352,67 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         else:
             # Fallback: treat as user message
             self.messages.add_user(result.raw_obs)
+
+    def _maybe_capture_tau2_user_costs(self, info: dict) -> None:
+        """Capture Tau2 user-simulator token/cost totals from the final `simulation_run` info."""
+        sim_run = info.get("simulation_run")
+        if not sim_run:
+            return
+
+        try:
+            sim = json.loads(sim_run) if isinstance(sim_run, str) else sim_run
+        except Exception:
+            logger.warning("Failed to parse tau2 simulation_run info")
+            return
+
+        if not isinstance(sim, dict) or not sim:
+            return
+
+        # Prefer the aggregate if present; otherwise fall back to summing message-level cost.
+        user_cost = sim.get("user_cost")
+        if isinstance(user_cost, (int, float)):
+            self.tau2_user_cost_usd = float(user_cost)
+        else:
+            total_cost = 0.0
+            for msg in sim.get("messages", []) or []:
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") != "user":
+                    continue
+                cost = msg.get("cost")
+                if isinstance(cost, (int, float)):
+                    total_cost += float(cost)
+            self.tau2_user_cost_usd = total_cost
+
+        prompt_tokens = 0
+        completion_tokens = 0
+        for msg in sim.get("messages", []) or []:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") != "user":
+                continue
+            usage = msg.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            prompt_tokens += int(usage.get("prompt_tokens") or 0)
+            completion_tokens += int(usage.get("completion_tokens") or 0)
+
+        self.tau2_user_input_tokens = prompt_tokens
+        self.tau2_user_output_tokens = completion_tokens
+
+    def get_token_costs(self) -> dict:
+        """Get token cost metrics for this episode."""
+        return {
+            "sonnet_input_tokens": self.sonnet_input_tokens,
+            "sonnet_output_tokens": self.sonnet_output_tokens,
+            "policy_input_tokens": self.policy_input_tokens,
+            "policy_output_tokens": self.policy_output_tokens,
+            "total_sonnet_tokens": self.sonnet_input_tokens + self.sonnet_output_tokens,
+            "total_policy_tokens": self.policy_input_tokens + self.policy_output_tokens,
+            "tau2_user_input_tokens": self.tau2_user_input_tokens,
+            "tau2_user_output_tokens": self.tau2_user_output_tokens,
+            "tau2_user_cost_usd": self.tau2_user_cost_usd,
+        }
 
 
 # =============================================================================
@@ -368,6 +454,10 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
     # Penalty per ask_sonnet call
     ask_sonnet_penalty: float = 0.0
+    # Optional token/cost penalties (applied to final reward)
+    sonnet_token_penalty_per_1k: float = 0.0
+    tau2_user_token_penalty_per_1k: float = 0.0
+    tau2_user_cost_penalty: float = 0.0
 
     async def make_envs(self) -> Sequence[Env]:
         """Create a group of tau2 environments with the same task."""
@@ -400,13 +490,37 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
         for env in env_group:
             tau2_env: Tau2Env = env
             ask_sonnet_count = tau2_env.ask_sonnet_call_count
-            penalty = self.ask_sonnet_penalty * ask_sonnet_count
+            ask_sonnet_penalty = self.ask_sonnet_penalty * ask_sonnet_count
+            sonnet_token_penalty = self.sonnet_token_penalty_per_1k * (
+                (tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens) / 1000.0
+            )
+            tau2_user_token_penalty = self.tau2_user_token_penalty_per_1k * (
+                (tau2_env.tau2_user_input_tokens + tau2_env.tau2_user_output_tokens) / 1000.0
+            )
+            tau2_user_cost_penalty = self.tau2_user_cost_penalty * tau2_env.tau2_user_cost_usd
+            total_penalty = (
+                ask_sonnet_penalty + sonnet_token_penalty + tau2_user_token_penalty + tau2_user_cost_penalty
+            )
 
             metrics = {
                 "ask_sonnet_count": ask_sonnet_count,
-                "ask_sonnet_penalty": penalty,
+                "ask_sonnet_penalty": ask_sonnet_penalty,
+                # Token costs
+                "sonnet_input_tokens": tau2_env.sonnet_input_tokens,
+                "sonnet_output_tokens": tau2_env.sonnet_output_tokens,
+                "policy_input_tokens": tau2_env.policy_input_tokens,
+                "policy_output_tokens": tau2_env.policy_output_tokens,
+                "total_sonnet_tokens": tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens,
+                "total_policy_tokens": tau2_env.policy_input_tokens + tau2_env.policy_output_tokens,
+                "tau2_user_input_tokens": tau2_env.tau2_user_input_tokens,
+                "tau2_user_output_tokens": tau2_env.tau2_user_output_tokens,
+                "tau2_user_cost_usd": tau2_env.tau2_user_cost_usd,
+                "sonnet_token_penalty": sonnet_token_penalty,
+                "tau2_user_token_penalty": tau2_user_token_penalty,
+                "tau2_user_cost_penalty": tau2_user_cost_penalty,
+                "total_cost_penalty": total_penalty,
             }
-            results.append((-penalty, metrics))
+            results.append((-total_penalty, metrics))
 
         return results
 
@@ -431,6 +545,9 @@ class Tau2Dataset(RLDataset):
     external_llm_max_tokens: int = 1024
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
     ask_sonnet_penalty: float = 0.0
+    sonnet_token_penalty_per_1k: float = 0.0
+    tau2_user_token_penalty_per_1k: float = 0.0
+    tau2_user_cost_penalty: float = 0.0
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
@@ -450,6 +567,9 @@ class Tau2Dataset(RLDataset):
                 external_llm_max_tokens=self.external_llm_max_tokens,
                 ask_sonnet_mode=self.ask_sonnet_mode,
                 ask_sonnet_penalty=self.ask_sonnet_penalty,
+                sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
+                tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
+                tau2_user_cost_penalty=self.tau2_user_cost_penalty,
             )
             for task in self.tasks[batch_start:batch_end]
         ]
@@ -478,6 +598,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     external_llm_max_tokens: int = 1024
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
     ask_sonnet_penalty: float = 0.0
+    sonnet_token_penalty_per_1k: float = 0.0
+    tau2_user_token_penalty_per_1k: float = 0.0
+    tau2_user_cost_penalty: float = 0.0
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
@@ -505,6 +628,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             external_llm_max_tokens=self.external_llm_max_tokens,
             ask_sonnet_mode=self.ask_sonnet_mode,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
+            sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
+            tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
+            tau2_user_cost_penalty=self.tau2_user_cost_penalty,
         )
 
         test_dataset = Tau2Dataset(
@@ -519,6 +645,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             external_llm_max_tokens=self.external_llm_max_tokens,
             ask_sonnet_mode=self.ask_sonnet_mode,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
+            sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
+            tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
+            tau2_user_cost_penalty=self.tau2_user_cost_penalty,
         )
 
         return train_dataset, test_dataset
