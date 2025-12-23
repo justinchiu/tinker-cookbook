@@ -77,6 +77,7 @@ class CLIConfig:
 
     # ask_sonnet injection (for teaching model to use ask_sonnet tool)
     ask_sonnet_injection_rate: float = 0.0  # 0.0 = disabled, 0.5 = 50% of assistant turns
+    train_on_ask_sonnet_only: bool = False  # Only train on ask_sonnet tool call turns (ignores train_on_what)
 
     # External LLM (ask_sonnet) for eval - needed if training with ask_sonnet injection
     external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
@@ -123,19 +124,26 @@ def main():
     )
 
     # Build dataset from the 3 simulation files
+    # Override train_on_what if train_on_ask_sonnet_only is set
+    train_on_what = cli_config.train_on_what
+    if cli_config.train_on_ask_sonnet_only:
+        train_on_what = TrainOnWhat.CUSTOMIZED
+        print("train_on_ask_sonnet_only=True: using CUSTOMIZED train_on_what, only ask_sonnet turns will have loss")
+
     common_config = ChatDatasetBuilderCommonConfig(
         model_name_for_tokenizer=cli_config.model_name,
         renderer_name=renderer_name,
         max_length=cli_config.max_length,
         batch_size=cli_config.batch_size,
-        train_on_what=cli_config.train_on_what,
+        train_on_what=train_on_what,
     )
 
     dataset_builder = Tau2SimulationFilesBuilder(
         common_config=common_config,
         simulation_files=SIMULATION_FILES,
         ask_sonnet_injection_rate=cli_config.ask_sonnet_injection_rate,
-        ask_sonnet_injection_mode=cli_config.ask_sonnet_mode,  # Use same mode for training data
+        ask_sonnet_injection_mode=cli_config.ask_sonnet_mode,
+        train_on_ask_sonnet_only=cli_config.train_on_ask_sonnet_only,
     )
 
     # Auto-set external_llm_model if ask_sonnet injection is enabled but model not specified

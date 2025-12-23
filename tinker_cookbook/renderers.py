@@ -600,7 +600,11 @@ You have access to the following tools. To use a tool, respond with a JSON objec
 {tools_text}"""
 
         # Create updated messages list with modified system message
-        updated_messages = [{"role": "system", "content": system_content}] + other_messages
+        new_system_msg: dict = {"role": "system", "content": system_content}
+        # Preserve trainable field if original system message had it
+        if "trainable" in system_msg:
+            new_system_msg["trainable"] = system_msg["trainable"]
+        updated_messages = [new_system_msg] + other_messages
         return updated_messages
 
     def build_supervised_example(
@@ -612,6 +616,11 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         """
         Get tokens and weights for action corresponding to final message.
         """
+        # Strip trainable field if not using CUSTOMIZED mode
+        # This allows callers to not worry about cleaning up trainable fields
+        if train_on_what != TrainOnWhat.CUSTOMIZED:
+            messages = [{k: v for k, v in m.items() if k != "trainable"} for m in messages]
+
         # Inject tools into system message if provided
         if tools is not None:
             messages = self._inject_tools_into_system_message(messages, tools)

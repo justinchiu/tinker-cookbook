@@ -124,6 +124,31 @@ def _inject_ask_sonnet_calls(
     return result
 
 
+def _mark_trainable_fields(messages: list[dict]) -> list[dict]:
+    """Mark trainable field on all messages for CUSTOMIZED train_on_what.
+
+    Only ask_sonnet tool calls are marked as trainable=True.
+    Everything else is marked as trainable=False.
+    """
+    result = []
+    for msg in messages:
+        # Check if this is an ask_sonnet tool call
+        is_ask_sonnet_call = False
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if hasattr(tc, 'function') and tc.function.name == "ask_sonnet":
+                    is_ask_sonnet_call = True
+                    break
+                elif isinstance(tc, dict):
+                    name = tc.get("name") or tc.get("function", {}).get("name")
+                    if name == "ask_sonnet":
+                        is_ask_sonnet_call = True
+                        break
+
+        result.append({**msg, "trainable": is_ask_sonnet_call})
+    return result
+
+
 def _generate_advice_for_action(msg: dict) -> str:
     """Generate advice by copying the full next assistant message in Qwen format.
 
@@ -219,7 +244,7 @@ def _add_system_prompt_with_ask_sonnet(messages: list[dict], domain: str) -> lis
     tau2_prompt = _get_cached_tau2_system_prompt(domain)
     full_system_content = tau2_prompt + ASK_SONNET_INSTRUCTION
 
-    system_msg = {
+    system_msg: dict = {
         "role": "system",
         "content": full_system_content,
     }
@@ -353,6 +378,7 @@ class DynamicInjectionDataset(SupervisedDataset):
         injection_rate: float,
         injection_mode: AskSonnetMode,
         max_length: int | None,
+        train_on_ask_sonnet_only: bool = False,
     ):
         self.conversations = conversations
         self.batch_size = batch_size
@@ -362,6 +388,7 @@ class DynamicInjectionDataset(SupervisedDataset):
         self.injection_rate = injection_rate
         self.injection_mode = injection_mode
         self.max_length = max_length
+        self.train_on_ask_sonnet_only = train_on_ask_sonnet_only
 
         # Will be populated by set_epoch
         self.datums: list[tinker.Datum] = []
@@ -385,6 +412,11 @@ class DynamicInjectionDataset(SupervisedDataset):
                 )
                 # Add tau2 system prompt + ask_sonnet instruction
                 messages = _add_system_prompt_with_ask_sonnet(messages, conv.domain)
+
+            # Mark trainable fields for CUSTOMIZED train_on_what
+            # This happens AFTER all message transformations so it covers everything
+            if self.train_on_what == TrainOnWhat.CUSTOMIZED:
+                messages = _mark_trainable_fields(messages)
 
             # Render to tokens
             tools = self.domain_tools.get(conv.domain)
@@ -676,6 +708,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
     ask_sonnet_injection_rate: float = 0.0  # Rate at which to inject ask_sonnet calls (0.0 = disabled)
     ask_sonnet_injection_seed: int = 42  # Seed for reproducible injection (unused with dynamic injection)
     ask_sonnet_injection_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+    train_on_ask_sonnet_only: bool = False  # Only train on ask_sonnet tool call turns
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
         train_on_what = (
@@ -775,14 +808,19 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                 injection_rate=self.ask_sonnet_injection_rate,
                 injection_mode=self.ask_sonnet_injection_mode,
                 max_length=self.common_config.max_length,
+                train_on_ask_sonnet_only=self.train_on_ask_sonnet_only,
             )
         else:
             # No injection - use simple pre-rendered dataset
             train_datums = []
             for conv in train_convs:
+                messages = conv.messages
+                # Mark trainable fields if needed for CUSTOMIZED train_on_what
+                if train_on_what == TrainOnWhat.CUSTOMIZED:
+                    messages = _mark_trainable_fields(messages)
                 tools = domain_tools.get(conv.domain)
                 tokens, weights = self.renderer.build_supervised_example(
-                    conv.messages,
+                    messages,
                     train_on_what=train_on_what,
                     tools=tools,
                 )
@@ -790,12 +828,30 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                 train_datums.append(datum)
             train_dataset = SimpleSupervisedDataset(train_datums, batch_size=self.common_config.batch_size)
 
-        # Test dataset never has injection (evaluate on clean data)
+        # Test dataset uses same loss mask as training
+        # If ask_sonnet injection is enabled, inject with a fixed seed for reproducibility
+        test_rng = random.Random(999)  # Fixed seed for test set
         test_datums = []
         for conv in test_convs:
+            messages = [m.copy() for m in conv.messages]
+
+            # Apply same injection as training (with fixed seed)
+            if self.ask_sonnet_injection_rate > 0:
+                messages = _inject_ask_sonnet_calls(
+                    messages,
+                    self.ask_sonnet_injection_rate,
+                    test_rng,
+                    mode=self.ask_sonnet_injection_mode,
+                )
+                messages = _add_system_prompt_with_ask_sonnet(messages, conv.domain)
+
+            # Mark trainable fields if using CUSTOMIZED
+            if train_on_what == TrainOnWhat.CUSTOMIZED:
+                messages = _mark_trainable_fields(messages)
+
             tools = domain_tools.get(conv.domain)
             tokens, weights = self.renderer.build_supervised_example(
-                conv.messages,
+                messages,
                 train_on_what=train_on_what,
                 tools=tools,
             )

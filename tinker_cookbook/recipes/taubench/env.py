@@ -76,6 +76,7 @@ class Tau2Env(Env):
         self.task_id = task_id
         self.max_context_length = max_context_length
         self._context_exceeded = False
+        self._current_obs_length = 0  # Track current observation length for pre-step check
 
         # Track ask_sonnet calls for reward computation
         self.ask_sonnet_call_count: int = 0
@@ -95,6 +96,11 @@ class Tau2Env(Env):
 
         # Initialize tau2 gym wrapper
         self.gym = Tau2GymWrapper(domain, task_id)
+        logger.debug(
+            "Tau2Env initialized for task %s with max_context_length=%s",
+            task_id,
+            max_context_length,
+        )
 
         # Get initial observation and system prompt
         initial_obs = self.gym.get_initial_observation()
@@ -182,6 +188,21 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         model_input = self.renderer.build_generation_prompt(
             self.messages.messages, tools=self.tools
         )
+        # Track current observation length for pre-step check
+        self._current_obs_length = model_input.length
+
+        # Check if initial observation already exceeds max_context_length
+        if (
+            self.max_context_length is not None
+            and model_input.length > self.max_context_length
+        ):
+            logger.warning(
+                "Initial observation length %d exceeds max %d for task %s, will terminate on first step",
+                model_input.length,
+                self.max_context_length,
+                self.task_id,
+            )
+
         return model_input, self.stop_condition
 
     async def step(self, action: Action) -> StepResult:
@@ -189,11 +210,36 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         Step the environment with a policy action.
 
         Logic:
-        1. Parse action
-        2. If ask_sonnet + conditioning: call Sonnet, return observation (don't send to tau2)
-        3. If ask_sonnet + direct: call Sonnet, send Sonnet's response to tau2
-        4. Otherwise: send action to tau2
+        1. Pre-check: terminate if current observation exceeded max_context_length
+        2. Parse action
+        3. If ask_sonnet + conditioning: call Sonnet, return observation (don't send to tau2)
+        4. If ask_sonnet + direct: call Sonnet, send Sonnet's response to tau2
+        5. Otherwise: send action to tau2
         """
+        # Pre-check: terminate immediately if current observation exceeded max_context_length
+        # This prevents the policy from being called on too-long observations
+        if (
+            self.max_context_length is not None
+            and self._current_obs_length > self.max_context_length
+        ):
+            logger.warning(
+                "Pre-step context length %d exceeded max %d for task %s, terminating",
+                self._current_obs_length,
+                self.max_context_length,
+                self.task_id,
+            )
+            self._context_exceeded = True
+            # Return current observation (can't build a new one without stepping tau2)
+            current_obs = self.renderer.build_generation_prompt(
+                self.messages.messages, tools=self.tools
+            )
+            return StepResult(
+                next_observation=current_obs,
+                next_stop_condition=self.stop_condition,
+                episode_done=True,
+                reward=0.0,
+            )
+
         # Track policy output tokens (the action)
         action_tokens = action if isinstance(action, list) else []
         self.policy_output_tokens += len(action_tokens)
@@ -226,6 +272,8 @@ You have access to the following tools. To use a tool, respond with a JSON objec
                 next_obs = self.renderer.build_generation_prompt(
                     self.messages.messages, tools=self.tools
                 )
+                # Track observation length for pre-step check on next iteration
+                self._current_obs_length = next_obs.length
                 return StepResult(
                     next_observation=next_obs,
                     next_stop_condition=self.stop_condition,
@@ -255,6 +303,9 @@ You have access to the following tools. To use a tool, respond with a JSON objec
         next_obs = self.renderer.build_generation_prompt(
             self.messages.messages, tools=self.tools
         )
+
+        # Track observation length for pre-step check on next iteration
+        self._current_obs_length = next_obs.length
 
         # Track policy input tokens (the observation/prompt length)
         self.policy_input_tokens += next_obs.length

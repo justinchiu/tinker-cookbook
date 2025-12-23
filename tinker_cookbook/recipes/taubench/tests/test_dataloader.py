@@ -10,6 +10,7 @@ from tinker_cookbook.recipes.taubench.sft_dataset import (
     DynamicInjectionDataset,
     ConversationRecord,
     _inject_ask_sonnet_calls,
+    _mark_trainable_fields,
     _normalize_tau2_messages,
 )
 from tinker_cookbook.recipes.taubench.components import AskSonnetMode
@@ -287,6 +288,175 @@ def test_system_prompt_with_tau2():
     print("PASS: System prompt correctly includes tau2 prompt + ask_sonnet instruction")
 
 
+def test_mark_trainable_fields():
+    """Test that _mark_trainable_fields correctly sets trainable field on messages."""
+    print("\n" + "=" * 60)
+    print("TEST: _mark_trainable_fields function")
+    print("=" * 60)
+
+    messages = [
+        {"role": "assistant", "content": "Hello!"},  # First assistant - not eligible
+        {"role": "user", "content": "I need help"},
+        {"role": "assistant", "content": "Sure, let me help you."},  # Eligible
+        {"role": "user", "content": "Thanks"},
+        {"role": "assistant", "content": "You're welcome."},  # Eligible
+    ]
+
+    rng = random.Random(42)
+    # First inject ask_sonnet calls
+    injected = _inject_ask_sonnet_calls(
+        [m.copy() for m in messages],
+        injection_rate=1.0,
+        rng=rng,
+        mode=AskSonnetMode.CONDITIONING,
+    )
+
+    # Then mark trainable fields
+    marked = _mark_trainable_fields(injected)
+
+    print("Messages after marking trainable fields:")
+    trainable_count = 0
+    ask_sonnet_trainable_count = 0
+    for i, m in enumerate(marked):
+        trainable = m.get("trainable", "NOT SET")
+        role = m["role"]
+        tool_calls = m.get("tool_calls", [])
+
+        is_ask_sonnet_call = False
+        if tool_calls:
+            for tc in tool_calls:
+                if hasattr(tc, 'function') and tc.function.name == "ask_sonnet":
+                    is_ask_sonnet_call = True
+
+        print(f"  {i}: [{role}] trainable={trainable}, is_ask_sonnet={is_ask_sonnet_call}")
+
+        if trainable == True:
+            trainable_count += 1
+            if is_ask_sonnet_call:
+                ask_sonnet_trainable_count += 1
+
+    # Verify: only ask_sonnet calls should be trainable
+    assert trainable_count > 0, "Expected at least one trainable message"
+    assert trainable_count == ask_sonnet_trainable_count, \
+        f"Only ask_sonnet calls should be trainable, but {trainable_count} trainable vs {ask_sonnet_trainable_count} ask_sonnet calls"
+
+    # Verify all messages have trainable field set
+    for m in marked:
+        assert "trainable" in m, f"Message missing trainable field: {m}"
+
+    print(f"\nTrainable messages: {trainable_count} (all are ask_sonnet calls)")
+    print("PASS: _mark_trainable_fields correctly marks only ask_sonnet calls as trainable")
+
+
+def test_mark_trainable_no_injection():
+    """Test that _mark_trainable_fields works on messages without ask_sonnet calls."""
+    print("\n" + "=" * 60)
+    print("TEST: _mark_trainable_fields with no ask_sonnet calls")
+    print("=" * 60)
+
+    messages = [
+        {"role": "assistant", "content": "Hello!"},
+        {"role": "user", "content": "I need help"},
+        {"role": "assistant", "content": "Sure."},
+    ]
+
+    # No injection, just mark trainable - should mark all as not trainable
+    result = _mark_trainable_fields([m.copy() for m in messages])
+
+    print("Messages with trainable field (no ask_sonnet):")
+    for i, m in enumerate(result):
+        trainable = m.get("trainable", "NOT SET")
+        print(f"  {i}: [{m['role']}] trainable={trainable}")
+        assert trainable == False, f"Expected trainable=False when no ask_sonnet, got {trainable}"
+
+    print("PASS: All messages marked as not trainable when no ask_sonnet calls")
+
+
+def test_system_prompt_trainable_field():
+    """Test that system prompt gets trainable=False when _mark_trainable_fields is called after adding it."""
+    print("\n" + "=" * 60)
+    print("TEST: System prompt gets trainable field")
+    print("=" * 60)
+
+    from tinker_cookbook.recipes.taubench.sft_dataset import _add_system_prompt_with_ask_sonnet
+    from tinker_cookbook.renderers import ToolCall
+
+    # Simulate the flow: inject -> add system prompt -> mark trainable
+    # Create a message with ask_sonnet tool call
+    messages = [
+        {"role": "assistant", "content": "Hello!"},
+        {"role": "user", "content": "I need help"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                ToolCall(
+                    function=ToolCall.FunctionBody(name="ask_sonnet", arguments="{}")
+                )
+            ]
+        },
+    ]
+
+    # Add system prompt (no trainable fields yet)
+    with_system = _add_system_prompt_with_ask_sonnet(messages, "retail")
+
+    # Now mark trainable fields
+    result = _mark_trainable_fields(with_system)
+
+    print("Messages after adding system prompt and marking trainable:")
+    for i, m in enumerate(result):
+        trainable = m.get("trainable", "NOT SET")
+        print(f"  {i}: [{m['role']}] trainable={trainable}")
+
+    # System message should be first and have trainable=False
+    assert result[0]["role"] == "system", "First message should be system"
+    assert result[0].get("trainable") == False, "System message should have trainable=False"
+
+    # All messages should have trainable field
+    for m in result:
+        assert "trainable" in m, f"Message missing trainable field: {m['role']}"
+
+    # The ask_sonnet call should be trainable=True
+    ask_sonnet_msg = result[3]  # After system, assistant, user
+    assert ask_sonnet_msg.get("trainable") == True, "ask_sonnet call should be trainable"
+
+    print("PASS: System prompt correctly gets trainable=False")
+
+
+def test_mark_trainable_single_assistant():
+    """Test that _mark_trainable_fields works on messages without any ask_sonnet calls."""
+    print("\n" + "=" * 60)
+    print("TEST: _mark_trainable_fields with single assistant message")
+    print("=" * 60)
+
+    # Only one assistant message - after injection there would be no ask_sonnet calls
+    messages = [
+        {"role": "assistant", "content": "Hello!"},  # First assistant - not eligible for injection
+        {"role": "user", "content": "Thanks, bye!"},
+    ]
+
+    rng = random.Random(42)
+    # First inject (this won't add any ask_sonnet since only first assistant)
+    injected = _inject_ask_sonnet_calls(
+        [m.copy() for m in messages],
+        injection_rate=1.0,  # Would inject if there were eligible turns
+        rng=rng,
+        mode=AskSonnetMode.CONDITIONING,
+    )
+
+    # Then mark trainable
+    result = _mark_trainable_fields(injected)
+
+    print("Messages with trainable field (single assistant, no ask_sonnet):")
+    for i, m in enumerate(result):
+        trainable = m.get("trainable", "NOT SET")
+        print(f"  {i}: [{m['role']}] trainable={trainable}")
+        assert "trainable" in m, f"Message missing trainable field: {m}"
+        assert trainable == False, f"Expected trainable=False, got {trainable}"
+
+    print("PASS: All messages marked as not trainable when no ask_sonnet calls")
+
+
 def main():
     print("Testing SFT Dataloader with Dynamic Injection")
     print("=" * 60)
@@ -296,6 +466,10 @@ def main():
     test_batch_retrieval()
     test_conditioning_format()
     test_system_prompt_with_tau2()
+    test_mark_trainable_fields()
+    test_mark_trainable_no_injection()
+    test_system_prompt_trainable_field()
+    test_mark_trainable_single_assistant()
 
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED")
