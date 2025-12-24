@@ -9,14 +9,19 @@ python -m tinker_cookbook.recipes.taubench.train
 from tinker_cookbook.recipes.taubench import tau2_logging_config
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import chz
+import tinker
 from tinker_cookbook import cli_utils, model_info
-from tinker_cookbook.recipes.taubench.components import AskSonnetMode
+from tinker_cookbook.completers import TokenCompleter
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode, EpsilonAskSonnetPolicy
 from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder
 from tinker_cookbook.rl import train
+
+logger = logging.getLogger(__name__)
 
 
 @chz.chz
@@ -31,7 +36,7 @@ class CLIConfig:
     max_tokens: int = 4096  # Tau2 conversations can be longer than 20 questions
     eval_every: int = 5  # Less frequent evals
     save_every: int = 5
-    wandb_project: str | None = None
+    wandb_project: str | None = "tau2-rl"
     wandb_name: str | None = None
     log_path: str | None = None
     domain: str = "retail"
@@ -42,15 +47,28 @@ class CLIConfig:
     external_llm_model: str | None = None  # e.g., "claude-sonnet-4-5-20250929"
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
-    ask_sonnet_penalty: float = 0.1  # Penalty per ask_sonnet call
-    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION  # How ask_sonnet works
+    ask_sonnet_penalty: float = 0.0  # Penalty per ask_sonnet call
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.CONDITIONING  # How ask_sonnet works
     # Optional token/cost penalties (applied to final reward)
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
     tau2_user_cost_penalty: float = 0.0
+    # Epsilon-greedy policy for ask_sonnet exploration
+    epsilon_ask_sonnet: bool = False  # Enable epsilon-greedy ask_sonnet exploration
+    initial_epsilon: float = 0.3  # Initial probability of forcing ask_sonnet
+    final_epsilon: float = 0.05  # Final epsilon after decay
+    epsilon_decay_steps: int = 100  # Steps over which to decay epsilon
+    epsilon_decay_type: str = "linear"  # "linear" or "exponential"
+    epsilon_seed: int = 42  # Random seed for epsilon exploration
 
 
-def build_config(cli_config: CLIConfig) -> train.Config:
+def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetPolicy | None]:
+    """Build training config and optionally create epsilon policy.
+
+    Returns:
+        Tuple of (train.Config, epsilon_policy or None)
+        The epsilon policy is returned separately so it can be used for logging metrics.
+    """
     model_name = cli_config.model_name
     renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
         cli_config.model_name
@@ -85,7 +103,47 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         tau2_user_cost_penalty=cli_config.tau2_user_cost_penalty,
     )
 
-    return train.Config(
+    # Create epsilon policy if enabled
+    epsilon_policy: EpsilonAskSonnetPolicy | None = None
+    policy_factory: train.PolicyFactory | None = None
+    on_train_step = None
+
+    if cli_config.epsilon_ask_sonnet:
+        epsilon_policy = EpsilonAskSonnetPolicy(
+            model_name=model_name,
+            max_tokens=cli_config.max_tokens,
+            temperature=1.0,  # Use temperature=1.0 for training
+            initial_epsilon=cli_config.initial_epsilon,
+            final_epsilon=cli_config.final_epsilon,
+            decay_steps=cli_config.epsilon_decay_steps,
+            decay_type=cli_config.epsilon_decay_type,
+            seed=cli_config.epsilon_seed,
+        )
+
+        def policy_factory(sampling_client: tinker.SamplingClient) -> TokenCompleter:
+            # Update the epsilon policy's sampling client
+            epsilon_policy.sampling_client = sampling_client
+            return epsilon_policy
+
+        def on_train_step(step: int) -> None:
+            # Update epsilon decay
+            epsilon_policy.step()
+            # Log metrics periodically
+            if step % 10 == 0:
+                metrics = epsilon_policy.get_metrics_and_reset()
+                logger.info(
+                    f"Epsilon policy step {step}: epsilon={metrics['epsilon_policy/current_epsilon']:.3f}, "
+                    f"forced={metrics['epsilon_policy/forced_ask_sonnet_total']}, "
+                    f"policy_ask={metrics['epsilon_policy/policy_ask_sonnet_total']}, "
+                    f"policy_other={metrics['epsilon_policy/policy_other_total']}"
+                )
+
+        logger.info(
+            f"Epsilon-greedy ask_sonnet enabled: initial_epsilon={cli_config.initial_epsilon}, "
+            f"final_epsilon={cli_config.final_epsilon}, decay_steps={cli_config.epsilon_decay_steps}"
+        )
+
+    config = train.Config(
         model_name=model_name,
         log_path=log_path,
         dataset_builder=dataset_builder,
@@ -98,7 +156,10 @@ def build_config(cli_config: CLIConfig) -> train.Config:
         wandb_name=wandb_name,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         eval_temperature=cli_config.eval_temperature,
+        policy_factory=policy_factory,
+        on_train_step=on_train_step,
     )
+    return config, epsilon_policy
 
 
 async def async_main(config: train.Config):
@@ -112,7 +173,7 @@ async def async_main(config: train.Config):
 
 def main():
     cli_config = chz.entrypoint(CLIConfig)
-    config = build_config(cli_config)
+    config, _epsilon_policy = build_config(cli_config)
     # Avoid clobbering log dir from your previous run:
     cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
     # Setup tau2 logging after log directory is validated

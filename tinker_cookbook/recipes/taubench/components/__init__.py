@@ -19,6 +19,12 @@ from tinker_cookbook.recipes.taubench.components.ask_sonnet_renderers import (
     get_ask_sonnet_renderer,
 )
 from tinker_cookbook.recipes.taubench.components.rollout_logger import RolloutLogger
+from tinker_cookbook.recipes.taubench.components.epsilon_policy import (
+    EpsilonAskSonnetPolicy,
+    EpsilonAskSonnetMetrics,
+    linear_decay,
+    exponential_decay,
+)
 
 
 # ask_sonnet tool definition (OpenAI function format)
@@ -68,6 +74,11 @@ __all__ = [
     "DirectInjectionRenderer",
     "ConditioningRenderer",
     "get_ask_sonnet_renderer",
+    # Epsilon Policy
+    "EpsilonAskSonnetPolicy",
+    "EpsilonAskSonnetMetrics",
+    "linear_decay",
+    "exponential_decay",
     # Logging
     "RolloutLogger",
     # Ask Sonnet Constants

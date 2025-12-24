@@ -8,7 +8,7 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Iterator, List, Sequence
+from typing import Any, Callable, Iterator, List, Protocol, Sequence
 
 import chz
 import numpy as np
@@ -16,7 +16,7 @@ import tinker
 import torch
 from tinker.types import LossFnType
 from tinker_cookbook import checkpoint_utils
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TokenCompleter, TinkerTokenCompleter
 from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
@@ -223,6 +223,11 @@ class AsyncConfig:
     groups_per_batch: int
 
 
+# Type for policy factory: takes sampling client and returns a TokenCompleter
+# Used to customize the policy (e.g., epsilon-greedy wrappers)
+PolicyFactory = Callable[[tinker.SamplingClient], TokenCompleter]
+
+
 @chz.chz
 class Config:
     learning_rate: float
@@ -262,6 +267,13 @@ class Config:
 
     # Logtree configuration
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
+
+    # Optional policy factory for custom policies (e.g., epsilon-greedy exploration)
+    # If None, uses default TinkerTokenCompleter
+    policy_factory: PolicyFactory | None = None
+
+    # Optional callback after each training step (e.g., for epsilon decay)
+    on_train_step: Callable[[int], None] | None = None
 
 
 @scope
@@ -371,6 +383,7 @@ async def do_sync_training_with_stream_minibatch(
                     temperature=cfg.temperature,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
+                    policy_factory=cfg.policy_factory,
                 )
                 metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
                 if trajectory_group is not None:
@@ -405,6 +418,10 @@ async def do_sync_training_with_stream_minibatch(
                 service_client,
                 tokenizer,
             )
+
+        # Call post-training step callback (e.g., for epsilon decay)
+        if cfg.on_train_step is not None:
+            cfg.on_train_step(i_batch)
 
         # Log metrics
         metrics.update(full_batch_metrics)
@@ -506,6 +523,7 @@ async def do_async_training(
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
                 do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
+                policy_factory=cfg.policy_factory,
             )
             if trajectory_group is None:
                 trajectory_groups_queue.put_nowait(None)
@@ -612,6 +630,10 @@ async def do_async_training(
             sampling_client_step = i_batch + 1
             sampling_client_updated_event.set()
 
+            # Call post-training step callback (e.g., for epsilon decay)
+            if cfg.on_train_step is not None:
+                cfg.on_train_step(i_batch)
+
             # Log metrics
             metrics.update(train_step_metrics)
             metrics["time/training_loop/total"] = time.time() - t_start
@@ -666,8 +688,12 @@ async def do_group_rollout_and_filter_constant_reward(
     temperature: float,
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
+    policy_factory: PolicyFactory | None = None,
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
+    if policy_factory is not None:
+        policy = policy_factory(sampling_client)
+    else:
+        policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
 
     with logtree.optional_enable_logging(enable_logging):
         trajectory_group = await do_group_rollout(env_group_builder, policy)
@@ -997,6 +1023,7 @@ async def do_sync_training(
                             temperature=cfg.temperature,
                             do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                             enable_logging=i < cfg.num_groups_to_log,
+                            policy_factory=cfg.policy_factory,
                         ),
                         name=f"sample_task_{i}",
                     )
@@ -1019,6 +1046,10 @@ async def do_sync_training(
             env_group_builders_P,
             trajectory_groups_P,
         )
+
+        # Call post-training step callback (e.g., for epsilon decay)
+        if cfg.on_train_step is not None:
+            cfg.on_train_step(i_batch)
 
         # Log metrics
         metrics.update(train_step_metrics)

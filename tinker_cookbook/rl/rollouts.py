@@ -15,6 +15,11 @@ from tinker_cookbook.utils import logtree
 @logtree.scope_header_decorator
 async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
     transitions = []
+
+    # Call start_episode if policy supports it (e.g., EpsilonAskSonnetPolicy)
+    if hasattr(policy, "start_episode"):
+        policy.start_episode()
+
     ob, stop_condition = await env.initial_observation()
     while True:
         ac_with_logprobs = await policy(ob, stop_condition)
@@ -31,6 +36,11 @@ async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
         stop_condition = step_result.next_stop_condition
         if step_result.episode_done:
             break
+
+    # Call end_episode if policy supports it
+    if hasattr(policy, "end_episode"):
+        policy.end_episode()
+
     return Trajectory(transitions=transitions, final_ob=ob)
 
 
