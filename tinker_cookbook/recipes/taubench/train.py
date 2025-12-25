@@ -34,8 +34,8 @@ class CLIConfig:
     batch_size: int = 16
     learning_rate: float = 5e-5
     max_tokens: int = 4096  # Tau2 conversations can be longer than 20 questions
-    eval_every: int = 5  # Less frequent evals
-    save_every: int = 5
+    eval_every: int = 10  # Less frequent evals
+    save_every: int = 10
     wandb_project: str | None = "tau2-rl"
     wandb_name: str | None = None
     log_path: str | None = None

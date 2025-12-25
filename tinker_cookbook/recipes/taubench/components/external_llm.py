@@ -1,14 +1,26 @@
 """ExternalLLMClient - Handles external LLM (e.g., Sonnet) interactions."""
 
 import logging
+import time
 from dataclasses import dataclass
 
 import litellm
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from tinker_cookbook.recipes.taubench.components.types import ExternalLLMConfig
 
 logger = logging.getLogger(__name__)
+
+
+def is_retryable_error(exception: BaseException) -> bool:
+    """Check if an exception is retryable (rate limit, server error, or credit balance)."""
+    if isinstance(exception, (litellm.InternalServerError, litellm.RateLimitError)):
+        return True
+    # Check for credit balance errors in the exception message
+    error_str = str(exception).lower()
+    if "credit balance" in error_str or "billing" in error_str:
+        return True
+    return False
 
 
 @dataclass
@@ -51,11 +63,11 @@ class ExternalLLMClient:
         return result.content
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
-        retry=retry_if_exception_type((litellm.InternalServerError, litellm.RateLimitError)),
+        stop=stop_after_attempt(10),  # More attempts for credit balance waits
+        wait=wait_exponential(multiplier=2, min=5, max=120),  # Wait up to 2 min between retries
+        retry=retry_if_exception(is_retryable_error),
         before_sleep=lambda retry_state: logger.warning(
-            "Retrying external LLM call (attempt %d) after error: %s",
+            "Retrying external LLM call (attempt %d) after error: %s. Waiting before retry...",
             retry_state.attempt_number,
             retry_state.outcome.exception() if retry_state.outcome else "unknown",
         ),
@@ -83,9 +95,10 @@ class ExternalLLMClient:
                 max_tokens=self.max_tokens,
                 temperature=self.temperature,
             )
-        except (litellm.InternalServerError, litellm.RateLimitError):
-            raise  # Let tenacity handle these
         except Exception as e:
+            if is_retryable_error(e):
+                logger.warning("Retryable error: %s", e)
+                raise  # Let tenacity handle these
             self._log_error(messages, e)
             raise
 
