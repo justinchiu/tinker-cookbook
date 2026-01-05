@@ -14,7 +14,7 @@ from tinker_cookbook.recipes.taubench.components.external_llm import ExternalLLM
 from tinker_cookbook.recipes.taubench.components.tau2_gym_wrapper import Tau2GymWrapper
 from tinker_cookbook.recipes.taubench.components.ask_sonnet_renderers import (
     AskSonnetRenderer,
-    DirectInjectionRenderer,
+    DirectRenderer,
     ConditioningRenderer,
     get_ask_sonnet_renderer,
 )
@@ -71,7 +71,7 @@ __all__ = [
     "Tau2GymWrapper",
     # Ask Sonnet Renderers
     "AskSonnetRenderer",
-    "DirectInjectionRenderer",
+    "DirectRenderer",
     "ConditioningRenderer",
     "get_ask_sonnet_renderer",
     # Epsilon Policy

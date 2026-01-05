@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from tinker_cookbook.recipes.taubench.components.types import AskSonnetMode
 
@@ -19,10 +19,136 @@ class AskSonnetRenderer(ABC):
     """
     Abstract base class for rendering ask_sonnet interactions.
 
+    Handles both:
+    - Preparing messages for advisor API call (render_for_advisor)
+    - Processing advisor's response (format_sonnet_response_for_messages, get_tau2_action)
+
     Different renderers handle the ask_sonnet flow differently:
-    - DirectInjectionRenderer: Sonnet's response is used directly as tau2 action
+    - DirectRenderer: Sonnet's response is used directly as tau2 action
     - ConditioningRenderer: Sonnet's response is advice; policy decides what to do
     """
+
+    def render_for_advisor(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        base_system_prompt: str,
+    ) -> list[dict]:
+        """
+        Convert messages to advisor-compatible format.
+
+        Args:
+            messages: Policy's message list
+            tools: List of tool definitions (OpenAI function format)
+            base_system_prompt: Base system prompt (without tool descriptions)
+
+        Returns:
+            List of messages formatted for advisor API call
+        """
+        result = []
+
+        for msg in messages:
+            role = msg.get("role", "")
+
+            if role == "system":
+                # Build system prompt with tool descriptions
+                result.append({
+                    "role": "system",
+                    "content": self._build_system_with_tools(base_system_prompt, tools),
+                })
+
+            elif role == "tool":
+                # Convert tool result to user message
+                content = msg.get("content", "")
+                result.append({
+                    "role": "user",
+                    "content": f"[Tool Result]: {content}" if content else "[Tool Result]: (empty)",
+                })
+
+            elif role == "assistant":
+                # Convert tool_calls to <tool_call> text format
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls", [])
+
+                if tool_calls:
+                    parts = [content] if content else []
+                    for tc in tool_calls:
+                        tc_json = self._format_tool_call(tc)
+                        parts.append(f"<tool_call>\n{tc_json}\n</tool_call>")
+                    content = "\n".join(parts)
+
+                result.append({
+                    "role": "assistant",
+                    "content": content,
+                })
+
+            elif role == "user":
+                result.append({
+                    "role": "user",
+                    "content": msg.get("content", ""),
+                })
+
+            else:
+                # Unknown role - pass through
+                logger.warning("Unknown message role: %s", role)
+                result.append({
+                    "role": role,
+                    "content": msg.get("content", ""),
+                })
+
+        return result
+
+    def _build_system_with_tools(self, base_prompt: str, tools: list[dict]) -> str:
+        """Build system prompt with tool descriptions in text."""
+        # Filter out ask_sonnet tool (advisor shouldn't see it)
+        filtered_tools = [t for t in tools if t.get("function", {}).get("name") != "ask_sonnet"]
+
+        if not filtered_tools:
+            return base_prompt
+
+        tool_descriptions = []
+        for tool in filtered_tools:
+            func = tool.get("function", tool)
+            name = func.get("name", "unknown")
+            desc = func.get("description", "")
+            params = func.get("parameters", {})
+            tool_descriptions.append(
+                f"- {name}: {desc}\n  Parameters: {json.dumps(params, indent=2)}"
+            )
+        tools_text = "\n".join(tool_descriptions)
+
+        return f"""{base_prompt}
+
+# Available Tools
+
+You have access to the following tools. To use a tool, respond with a JSON object in the following format:
+<tool_call>
+{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
+</tool_call>
+
+{tools_text}"""
+
+    def _format_tool_call(self, tc: Any) -> str:
+        """Format a tool call to JSON string."""
+        # Handle pydantic ToolCall objects
+        if hasattr(tc, "function"):
+            name = tc.function.name
+            args = tc.function.arguments
+            # Parse arguments if it's a string
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    pass
+        # Handle dict format
+        elif isinstance(tc, dict):
+            func = tc.get("function", tc)
+            name = func.get("name", "unknown")
+            args = func.get("arguments", {})
+        else:
+            return str(tc)
+
+        return json.dumps({"name": name, "arguments": args})
 
     @abstractmethod
     def format_sonnet_response_for_messages(self, content: str) -> dict:
@@ -34,19 +160,6 @@ class AskSonnetRenderer(ABC):
 
         Returns:
             Message dict to add to messages
-        """
-        pass
-
-    @abstractmethod
-    def format_sonnet_response_for_external(self, content: str) -> dict:
-        """
-        Format Sonnet's response to add to external_llm_messages.
-
-        Args:
-            content: Sonnet's response content
-
-        Returns:
-            Message dict to add to external_messages
         """
         pass
 
@@ -124,45 +237,6 @@ class AskSonnetRenderer(ABC):
         ).strip()
 
 
-class DirectInjectionRenderer(AskSonnetRenderer):
-    """
-    Direct injection mode: Sonnet's response is used directly as the tau2 action.
-
-    Flow:
-    1. Policy calls ask_sonnet
-    2. Sonnet responds with action/message
-    3. Sonnet's response is sent directly to tau2
-    4. Policy doesn't see Sonnet's response during the episode
-    """
-
-    def format_sonnet_response_for_messages(self, content: str) -> dict:
-        """Sonnet's response is added as tool result."""
-        return {
-            "role": "tool",
-            "content": content,
-            "tool_call_id": "ask_sonnet_call",
-        }
-
-    def format_sonnet_response_for_external(self, content: str) -> dict:
-        """Sonnet's response is recorded as its own assistant message."""
-        return {
-            "role": "assistant",
-            "content": content,
-        }
-
-    def get_tau2_action(self, sonnet_response: str, qwen_followup: dict | None) -> str:
-        """Use Sonnet's response directly as the action."""
-        return self._extract_action_from_content(sonnet_response)
-
-    def should_return_early(self) -> bool:
-        """Don't return early - continue to tau2."""
-        return False
-
-    def requires_followup(self) -> bool:
-        """No followup required."""
-        return False
-
-
 class ConditioningRenderer(AskSonnetRenderer):
     """
     Conditioning mode: Sonnet's response is advice; policy decides what to do.
@@ -185,21 +259,12 @@ class ConditioningRenderer(AskSonnetRenderer):
             "tool_call_id": "ask_sonnet_call",
         }
 
-    def format_sonnet_response_for_external(self, content: str) -> dict:
-        """Record that advice was delivered."""
-        return {
-            "role": "user",
-            "content": "[Your previous advice was delivered. Waiting for agent's next action.]",
-        }
-
     def get_tau2_action(self, sonnet_response: str, qwen_followup: dict | None) -> str:
         """Use policy's followup as the action, not Sonnet's response."""
         if qwen_followup is None:
             raise ValueError("Conditioning mode requires policy followup")
         content = qwen_followup.get("content", "")
-        action = self._extract_action_from_content(content)
-        import ipdb; ipdb.set_trace()
-        return action
+        return self._extract_action_from_content(content)
 
     def should_return_early(self) -> bool:
         """Return early to get policy's followup."""
@@ -208,6 +273,34 @@ class ConditioningRenderer(AskSonnetRenderer):
     def requires_followup(self) -> bool:
         """Followup required from policy."""
         return True
+
+
+class DirectRenderer(ConditioningRenderer):
+    """
+    Direct mode: After the ask_sonnet tool, Sonnet's response is sent directly to tau2.
+
+    Inherits from ConditioningRenderer to use the same message format
+    ([Sonnet's Advice] prefix), but sends the action directly to tau2
+    instead of waiting for a policy followup.
+
+    Flow:
+    1. Policy calls ask_sonnet
+    2. Sonnet responds with action/message
+    3. Sonnet's response is sent directly to tau2
+    4. tau2 result is returned to policy
+    """
+
+    def get_tau2_action(self, sonnet_response: str, qwen_followup: dict | None) -> str:
+        """Use Sonnet's response directly as the action."""
+        return self._extract_action_from_content(sonnet_response)
+
+    def should_return_early(self) -> bool:
+        """Don't return early - send directly to tau2."""
+        return False
+
+    def requires_followup(self) -> bool:
+        """No followup required."""
+        return False
 
 
 def get_ask_sonnet_renderer(mode: AskSonnetMode) -> AskSonnetRenderer:
@@ -221,7 +314,7 @@ def get_ask_sonnet_renderer(mode: AskSonnetMode) -> AskSonnetRenderer:
         Appropriate AskSonnetRenderer instance
     """
     if mode == AskSonnetMode.DIRECT_INJECTION:
-        return DirectInjectionRenderer()
+        return DirectRenderer()
     elif mode == AskSonnetMode.CONDITIONING:
         return ConditioningRenderer()
     else:

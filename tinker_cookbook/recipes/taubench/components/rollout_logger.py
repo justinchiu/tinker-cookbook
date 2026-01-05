@@ -15,7 +15,7 @@ class RolloutLogger:
     """
     Logger for tau2 rollout conversations.
 
-    Saves full message histories (policy view and external LLM view) to JSON files.
+    Saves full message histories (policy view) to JSON files.
     Each episode gets its own file with metadata.
     """
 
@@ -35,7 +35,6 @@ class RolloutLogger:
         task_id: str,
         reward: float,
         messages: list[dict],
-        external_messages: list[dict] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str | None:
         """
@@ -46,7 +45,6 @@ class RolloutLogger:
             task_id: The task ID within the domain
             reward: Final reward for the episode
             messages: Policy's message history
-            external_messages: External LLM's message history (if applicable)
             metadata: Additional metadata (token costs, ask_sonnet_count, etc.)
 
         Returns:
@@ -81,9 +79,6 @@ class RolloutLogger:
             "reward": reward,
             "messages": [serialize_message(m) for m in messages],
         }
-
-        if external_messages:
-            episode_data["external_messages"] = [serialize_message(m) for m in external_messages]
 
         if metadata:
             episode_data["metadata"] = metadata

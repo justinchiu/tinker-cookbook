@@ -95,29 +95,14 @@ def _inject_ask_sonnet_calls(
             }
             result.append(ask_sonnet_msg)
 
-            if mode == AskSonnetMode.CONDITIONING:
-                # CONDITIONING: Sonnet gives advice, policy takes action
-                advice = _generate_advice_for_action(msg)
-                tool_result_msg = renderer.format_sonnet_response_for_messages(advice)
-                result.append(tool_result_msg)
-                # Keep original assistant message as policy's followup
-                result.append(msg)
-            else:
-                # DIRECT_INJECTION: Sonnet's response IS the action
-                if msg.get("tool_calls"):
-                    sonnet_response = json.dumps({
-                        "content": msg.get("content", ""),
-                        "tool_calls": [
-                            {"name": tc.function.name, "arguments": tc.function.arguments}
-                            if hasattr(tc, 'function') else tc
-                            for tc in msg["tool_calls"]
-                        ]
-                    })
-                else:
-                    sonnet_response = msg.get("content", "")
-
-                tool_result_msg = renderer.format_sonnet_response_for_messages(sonnet_response)
-                result.append(tool_result_msg)
+            # Both CONDITIONING and DIRECT_INJECTION use the same SFT format:
+            # ask_sonnet call + advice (tool result) + original assistant message
+            # The difference between modes is only at inference time.
+            advice = _generate_advice_for_action(msg)
+            tool_result_msg = renderer.format_sonnet_response_for_messages(advice)
+            result.append(tool_result_msg)
+            # Keep original assistant message as policy's followup
+            result.append(msg)
         else:
             result.append(msg)
 

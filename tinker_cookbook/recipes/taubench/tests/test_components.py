@@ -15,7 +15,7 @@ from tinker_cookbook.recipes.taubench.components import (
     AskSonnetMode,
     AskSonnetRenderer,
     ConditioningRenderer,
-    DirectInjectionRenderer,
+    DirectRenderer,
     ExternalLLMClient,
     ExternalLLMConfig,
     MessageManager,
@@ -56,7 +56,6 @@ def message_manager():
     """Get message manager for testing."""
     return MessageManager(
         system_prompt="You are a helpful assistant.",
-        external_system_prompt="You are a helpful assistant. Use <tool_call> tags.",
         initial_user_content="Hello, I need help.",
     )
 
@@ -77,7 +76,7 @@ class TestAskSonnetMode:
 
     def test_get_renderer_direct(self):
         renderer = get_ask_sonnet_renderer(AskSonnetMode.DIRECT_INJECTION)
-        assert isinstance(renderer, DirectInjectionRenderer)
+        assert isinstance(renderer, DirectRenderer)
 
     def test_get_renderer_conditioning(self):
         renderer = get_ask_sonnet_renderer(AskSonnetMode.CONDITIONING)
@@ -89,41 +88,65 @@ class TestAskSonnetMode:
 
 
 # =============================================================================
-# DirectInjectionRenderer Tests
+# DirectRenderer Tests
 # =============================================================================
 
 
-class TestDirectInjectionRenderer:
-    """Tests for DirectInjectionRenderer."""
+class TestDirectRenderer:
+    """Tests for DirectRenderer."""
 
     @pytest.fixture
     def renderer(self):
-        return DirectInjectionRenderer()
+        return DirectRenderer()
 
     def test_should_return_early(self, renderer):
-        """Direct injection should NOT return early."""
+        """Direct mode should NOT return early."""
         assert renderer.should_return_early() is False
 
     def test_requires_followup(self, renderer):
-        """Direct injection should NOT require followup."""
+        """Direct mode should NOT require followup."""
         assert renderer.requires_followup() is False
 
     def test_format_sonnet_response_for_messages(self, renderer):
-        """Sonnet's response should be added as tool result."""
+        """Sonnet's response should be added as tool result with advice prefix."""
         content = "I recommend checking the order status."
         msg = renderer.format_sonnet_response_for_messages(content)
 
         assert msg["role"] == "tool"
-        assert msg["content"] == content
+        assert "[Sonnet's Advice]:" in msg["content"]
+        assert content in msg["content"]
         assert msg["tool_call_id"] == "ask_sonnet_call"
 
-    def test_format_sonnet_response_for_external(self, renderer):
-        """Sonnet's response should be recorded as assistant message."""
-        content = "I recommend checking the order status."
-        msg = renderer.format_sonnet_response_for_external(content)
+    def test_render_for_advisor(self, renderer):
+        """render_for_advisor should convert messages to advisor format."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there!"},
+            {"role": "tool", "content": "Order found", "tool_call_id": "123"},
+        ]
+        tools = [
+            {"function": {"name": "get_order", "description": "Get order", "parameters": {}}}
+        ]
 
-        assert msg["role"] == "assistant"
-        assert msg["content"] == content
+        result = renderer.render_for_advisor(messages, tools, "You are helpful.")
+
+        # System should have tools added
+        assert result[0]["role"] == "system"
+        assert "Available Tools" in result[0]["content"]
+        assert "get_order" in result[0]["content"]
+
+        # User stays as user
+        assert result[1]["role"] == "user"
+        assert result[1]["content"] == "Hello"
+
+        # Assistant stays as assistant
+        assert result[2]["role"] == "assistant"
+        assert result[2]["content"] == "Hi there!"
+
+        # Tool becomes user with prefix
+        assert result[3]["role"] == "user"
+        assert "[Tool Result]:" in result[3]["content"]
 
     def test_get_tau2_action_with_tool_call_tags(self, renderer):
         """Should extract action from <tool_call> tags."""
@@ -145,6 +168,56 @@ class TestDirectInjectionRenderer:
         action = renderer.get_tau2_action(sonnet_response, None)
 
         assert action == "Hello, how can I help you today?"
+
+    def test_direct_mode_message_flow(self, renderer):
+        """
+        Test the expected message flow in DIRECT mode.
+
+        In DIRECT mode, after ask_sonnet:
+        1. ask_sonnet call added (assistant)
+        2. Sonnet's advice added as tool result with [Sonnet's Advice] prefix
+        3. Action extracted and added as assistant message (copied from Sonnet)
+        4. tau2 result added
+
+        This ensures Qwen sees the full conversation including what was sent to tau2.
+        """
+        # Simulate the message flow
+        mm = MessageManager(
+            system_prompt="You are helpful.",
+            initial_user_content="Hello",
+        )
+
+        # 1. Qwen calls ask_sonnet
+        ask_sonnet_msg = {"role": "assistant", "content": '{"name": "ask_sonnet", "arguments": {}}'}
+        mm.add_ask_sonnet_call(ask_sonnet_msg)
+
+        # 2. Sonnet responds with advice
+        sonnet_response = '<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>'
+        mm.add_sonnet_response(sonnet_response, renderer)
+
+        # 3. Action extracted and added as assistant (this is what env.py does)
+        # env.py wraps tool calls in <tool_call> tags for the message
+        action_str = renderer.get_tau2_action(sonnet_response, None)
+        import json
+        try:
+            json.loads(action_str)
+            assistant_content = f"<tool_call>\n{action_str}\n</tool_call>"
+        except json.JSONDecodeError:
+            assistant_content = action_str
+        mm.add_assistant(assistant_content)
+
+        # 4. tau2 result would be added here (simulated)
+        mm.add_tool_result('{"status": "found", "order": {...}}')
+
+        # Verify message structure
+        assert len(mm.messages) == 6  # system, user, ask_sonnet, advice, action, result
+        assert mm.messages[2]["role"] == "assistant"  # ask_sonnet call
+        assert mm.messages[3]["role"] == "tool"  # Sonnet's advice
+        assert "[Sonnet's Advice]:" in mm.messages[3]["content"]
+        assert mm.messages[4]["role"] == "assistant"  # copied action
+        assert "<tool_call>" in mm.messages[4]["content"]  # has proper wrapper
+        assert "get_order" in mm.messages[4]["content"]
+        assert mm.messages[5]["role"] == "tool"  # tau2 result
 
 
 # =============================================================================
@@ -177,14 +250,6 @@ class TestConditioningRenderer:
         assert content in msg["content"]
         assert msg["tool_call_id"] == "ask_sonnet_call"
 
-    def test_format_sonnet_response_for_external(self, renderer):
-        """External message should indicate advice was delivered."""
-        content = "I suggest using the refund tool."
-        msg = renderer.format_sonnet_response_for_external(content)
-
-        assert msg["role"] == "user"
-        assert "advice was delivered" in msg["content"]
-
     def test_get_tau2_action_uses_followup(self, renderer):
         """Should use Qwen's followup, not Sonnet's response."""
         sonnet_response = '<tool_call>{"name": "suggest", "arguments": {}}</tool_call>'
@@ -201,6 +266,56 @@ class TestConditioningRenderer:
 
         with pytest.raises(ValueError, match="requires policy followup"):
             renderer.get_tau2_action(sonnet_response, None)
+
+    def test_conditioning_mode_message_flow(self, renderer):
+        """
+        Test the expected message flow in CONDITIONING mode.
+
+        In CONDITIONING mode, after ask_sonnet:
+        1. ask_sonnet call added (assistant)
+        2. Sonnet's advice added as tool result with [Sonnet's Advice] prefix
+        3. Observation returned to Qwen (should_return_early=True)
+        4. Qwen produces followup action (assistant)
+        5. tau2 result added
+
+        This ensures Qwen sees Sonnet's advice and produces its own action.
+        """
+        # Simulate the message flow
+        mm = MessageManager(
+            system_prompt="You are helpful.",
+            initial_user_content="Hello",
+        )
+
+        # 1. Qwen calls ask_sonnet
+        ask_sonnet_msg = {"role": "assistant", "content": '{"name": "ask_sonnet", "arguments": {}}'}
+        mm.add_ask_sonnet_call(ask_sonnet_msg)
+
+        # 2. Sonnet responds with advice
+        sonnet_response = "I recommend calling get_order first.\n<tool_call>\n" \
+                          '{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>'
+        mm.add_sonnet_response(sonnet_response, renderer)
+
+        # 3. should_return_early=True, so observation returned to Qwen
+        assert renderer.should_return_early() is True
+
+        # 4. Qwen produces followup action (may differ from Sonnet's suggestion)
+        qwen_followup = {"role": "assistant", "content": '<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>'}
+        mm.add_assistant_message_dict(qwen_followup)
+
+        # 5. tau2 result added
+        mm.add_tool_result('{"status": "found", "order": {...}}')
+
+        # Verify message structure
+        assert len(mm.messages) == 6  # system, user, ask_sonnet, advice, followup, result
+        assert mm.messages[2]["role"] == "assistant"  # ask_sonnet call
+        assert mm.messages[3]["role"] == "tool"  # Sonnet's advice
+        assert "[Sonnet's Advice]:" in mm.messages[3]["content"]
+        assert mm.messages[4]["role"] == "assistant"  # Qwen's followup
+        assert mm.messages[5]["role"] == "tool"  # tau2 result
+
+        # Verify get_tau2_action uses followup, not Sonnet's response
+        action_str = renderer.get_tau2_action(sonnet_response, qwen_followup)
+        assert "get_order" in action_str
 
 
 # =============================================================================
@@ -310,41 +425,30 @@ class TestActionParser:
 class TestMessageManager:
     """Tests for MessageManager."""
 
-    def test_init_creates_both_histories(self, message_manager):
-        """Should initialize both message histories."""
+    def test_init_creates_messages(self, message_manager):
+        """Should initialize message history."""
         assert len(message_manager.messages) == 2  # system + user
-        assert len(message_manager.external_messages) == 2
 
-    def test_init_system_prompts(self, message_manager):
-        """Should use different system prompts."""
+    def test_init_system_prompt(self, message_manager):
+        """Should use system prompt."""
         assert message_manager.messages[0]["content"] == "You are a helpful assistant."
-        assert "tool_call" in message_manager.external_messages[0]["content"]
+        assert message_manager.system_prompt == "You are a helpful assistant."
 
-    def test_add_assistant_to_both(self, message_manager):
-        """add_assistant should add to both histories."""
+    def test_add_assistant(self, message_manager):
+        """add_assistant should add to messages."""
         initial_len = len(message_manager.messages)
-        message_manager.add_assistant("I can help with that.", to_external=True)
+        message_manager.add_assistant("I can help with that.")
 
         assert len(message_manager.messages) == initial_len + 1
-        assert len(message_manager.external_messages) == initial_len + 1
         assert message_manager.messages[-1]["role"] == "assistant"
-        assert message_manager.external_messages[-1]["role"] == "assistant"
-
-    def test_add_assistant_to_messages_only(self, message_manager):
-        """add_assistant with to_external=False should only add to messages."""
-        initial_external_len = len(message_manager.external_messages)
-        message_manager.add_assistant("Internal note", to_external=False)
-
-        assert message_manager.messages[-1]["content"] == "Internal note"
-        assert len(message_manager.external_messages) == initial_external_len
+        assert message_manager.messages[-1]["content"] == "I can help with that."
 
     def test_add_user(self, message_manager):
-        """add_user should add to both histories."""
+        """add_user should add to messages."""
         message_manager.add_user("My order number is 12345.")
 
         assert message_manager.messages[-1]["role"] == "user"
         assert message_manager.messages[-1]["content"] == "My order number is 12345."
-        assert message_manager.external_messages[-1]["role"] == "user"
 
     def test_add_user_empty_content(self, message_manager):
         """add_user should handle empty content."""
@@ -353,16 +457,12 @@ class TestMessageManager:
         assert message_manager.messages[-1]["content"] == "(waiting)"
 
     def test_add_tool_result(self, message_manager):
-        """add_tool_result should format differently for each history."""
+        """add_tool_result should add tool message."""
         message_manager.add_tool_result("Order found: status=shipped", tool_call_id="order_123")
 
-        # Messages gets tool role
         assert message_manager.messages[-1]["role"] == "tool"
         assert message_manager.messages[-1]["tool_call_id"] == "order_123"
-
-        # External gets user role with prefix
-        assert message_manager.external_messages[-1]["role"] == "user"
-        assert "[Tool Result]:" in message_manager.external_messages[-1]["content"]
+        assert message_manager.messages[-1]["content"] == "Order found: status=shipped"
 
     def test_add_tool_result_empty_content(self, message_manager):
         """add_tool_result should handle empty content."""
@@ -371,24 +471,24 @@ class TestMessageManager:
         assert message_manager.messages[-1]["content"] == "(empty result)"
 
     def test_add_ask_sonnet_call(self, message_manager):
-        """add_ask_sonnet_call should only add to messages."""
-        initial_external_len = len(message_manager.external_messages)
+        """add_ask_sonnet_call should add to messages."""
+        initial_len = len(message_manager.messages)
         ask_sonnet_msg = {"role": "assistant", "content": '{"name": "ask_sonnet"}'}
 
         message_manager.add_ask_sonnet_call(ask_sonnet_msg)
 
         assert message_manager.messages[-1] == ask_sonnet_msg
-        assert len(message_manager.external_messages) == initial_external_len
+        assert len(message_manager.messages) == initial_len + 1
 
     def test_add_sonnet_response_direct(self, message_manager):
-        """add_sonnet_response with DirectInjectionRenderer."""
-        renderer = DirectInjectionRenderer()
+        """add_sonnet_response with DirectRenderer."""
+        renderer = DirectRenderer()
         content = "I recommend the refund option."
 
         message_manager.add_sonnet_response(content, renderer)
 
         assert message_manager.messages[-1]["role"] == "tool"
-        assert message_manager.external_messages[-1]["role"] == "assistant"
+        assert "[Sonnet's Advice]:" in message_manager.messages[-1]["content"]
 
     def test_add_sonnet_response_conditioning(self, message_manager):
         """add_sonnet_response with ConditioningRenderer."""
@@ -397,20 +497,16 @@ class TestMessageManager:
 
         message_manager.add_sonnet_response(content, renderer)
 
+        assert message_manager.messages[-1]["role"] == "tool"
         assert "[Sonnet's Advice]:" in message_manager.messages[-1]["content"]
-        assert "advice was delivered" in message_manager.external_messages[-1]["content"]
 
-    def test_get_external_messages_for_llm(self, message_manager):
-        """get_external_messages_for_llm should return simplified format."""
-        message_manager.add_assistant("Test message")
+    def test_add_assistant_message_dict(self, message_manager):
+        """add_assistant_message_dict should add message dict directly."""
+        msg = {"role": "assistant", "content": "Hello", "tool_calls": []}
 
-        llm_messages = message_manager.get_external_messages_for_llm()
+        message_manager.add_assistant_message_dict(msg)
 
-        for msg in llm_messages:
-            assert "role" in msg
-            assert "content" in msg
-            # Should not have extra keys
-            assert set(msg.keys()) == {"role", "content"}
+        assert message_manager.messages[-1] == msg
 
 
 # =============================================================================

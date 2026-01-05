@@ -136,14 +136,6 @@ class Tau2Env(Env):
             # Create ask_sonnet renderer
             self.ask_sonnet_renderer = get_ask_sonnet_renderer(ask_sonnet_mode)
 
-            # Build external system prompt with tools (excluding ask_sonnet)
-            external_tools = [t for t in self.tools if t["function"]["name"] != "ask_sonnet"]
-            external_system_prompt = self._build_system_prompt_with_tools(
-                system_prompt, external_tools
-            )
-        else:
-            external_system_prompt = system_prompt
-
         # Initialize action parser
         self.action_parser = ActionParser(renderer)
 
@@ -151,33 +143,8 @@ class Tau2Env(Env):
         initial_user_content = initial_obs if initial_obs else "(Customer connected, please greet them)"
         self.messages = MessageManager(
             system_prompt=system_prompt,
-            external_system_prompt=external_system_prompt,
             initial_user_content=initial_user_content,
         )
-
-    def _build_system_prompt_with_tools(self, system_prompt: str, tools: list[dict]) -> str:
-        """Build system prompt with tools described in text (for external LLM)."""
-        tool_descriptions = []
-        for tool in tools:
-            func = tool.get("function", tool)
-            name = func.get("name", "unknown")
-            desc = func.get("description", "")
-            params = func.get("parameters", {})
-            tool_descriptions.append(
-                f"- {name}: {desc}\n  Parameters: {json.dumps(params, indent=2)}"
-            )
-        tools_text = "\n".join(tool_descriptions)
-
-        return f"""{system_prompt}
-
-# Available Tools
-
-You have access to the following tools. To use a tool, respond with a JSON object in the following format:
-<tool_call>
-{{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
-</tool_call>
-
-{tools_text}"""
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -256,8 +223,12 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             self.messages.add_ask_sonnet_call(parsed.original_message)
 
             # Call external LLM with usage tracking
-            external_messages = self.messages.get_external_messages_for_llm()
-            result = await self.external_llm.call_with_usage(external_messages)
+            advisor_messages = self.ask_sonnet_renderer.render_for_advisor(
+                self.messages.messages,
+                self.tools,
+                self.messages.system_prompt,
+            )
+            result = await self.external_llm.call_with_usage(advisor_messages)
             sonnet_response = result.content
 
             # Track Sonnet token usage
@@ -267,8 +238,8 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             # Add Sonnet's response using the renderer
             self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
 
-            if self.ask_sonnet_mode == AskSonnetMode.CONDITIONING:
-                # Conditioning: return observation, don't send to tau2
+            if self.ask_sonnet_renderer.should_return_early():
+                # Conditioning: return observation, wait for policy followup
                 next_obs = self.renderer.build_generation_prompt(
                     self.messages.messages, tools=self.tools
                 )
@@ -281,12 +252,21 @@ You have access to the following tools. To use a tool, respond with a JSON objec
                     reward=0.0,
                 )
             else:
-                # Direct injection: send Sonnet's response to tau2
+                # Direct: send Sonnet's response to tau2 immediately
                 action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
+                # Add assistant message with proper <tool_call> format
+                # (action_str is raw JSON, need to wrap it for the message)
+                try:
+                    json.loads(action_str)  # Check if it's valid JSON (tool call)
+                    assistant_content = f"<tool_call>\n{action_str}\n</tool_call>"
+                except json.JSONDecodeError:
+                    # Plain text response
+                    assistant_content = action_str
+                self.messages.add_assistant(assistant_content)
                 return await self._send_to_tau2(action_str)
 
         # Not ask_sonnet: add to messages and send to tau2
-        self.messages.add_assistant_message_dict(parsed.original_message, to_external=True)
+        self.messages.add_assistant_message_dict(parsed.original_message)
         action_str = self.action_parser.to_tau2_action(parsed)
         return await self._send_to_tau2(action_str)
 
@@ -426,7 +406,6 @@ You have access to the following tools. To use a tool, respond with a JSON objec
             task_id=self.task_id,
             reward=reward,
             messages=self.messages.messages,
-            external_messages=self.messages.external_messages,
             metadata=metadata,
         )
 
