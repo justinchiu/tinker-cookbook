@@ -14,6 +14,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Pattern to match and strip ASK_SONNET_INSTRUCTION from system prompts
+# This is critical: the advisor should NOT see instructions about delegating to itself
+_ASK_SONNET_INSTRUCTION_PATTERN = re.compile(
+    r"\n\nIMPORTANT: You have access to a special tool called `ask_sonnet`.*?"
+    r"for subsequent turns if needed\.",
+    re.DOTALL
+)
+
 
 class AskSonnetRenderer(ABC):
     """
@@ -40,25 +48,51 @@ class AskSonnetRenderer(ABC):
         Args:
             messages: Policy's message list
             tools: List of tool definitions (OpenAI function format)
-            base_system_prompt: Base system prompt (without tool descriptions)
+            base_system_prompt: Base system prompt (may include ask_sonnet instructions)
 
         Returns:
             List of messages formatted for advisor API call
         """
+        # CRITICAL: Strip ask_sonnet instructions from system prompt!
+        # The advisor should NOT see instructions about delegating to itself,
+        # otherwise it gets confused and returns meta-commentary like
+        # "I need to delegate this to Claude Sonnet..." instead of taking action.
+        clean_system_prompt = _ASK_SONNET_INSTRUCTION_PATTERN.sub("", base_system_prompt)
+
         result = []
 
-        for msg in messages:
+        # Track indices to skip (ask_sonnet calls and their responses)
+        skip_indices = set()
+        for i, msg in enumerate(messages):
+            # Skip ask_sonnet tool calls
+            if msg.get("role") == "assistant":
+                content = msg.get("content", "")
+                if "ask_sonnet" in content:
+                    skip_indices.add(i)
+                    # Also skip the next message if it's the tool result
+                    if i + 1 < len(messages):
+                        next_msg = messages[i + 1]
+                        if next_msg.get("role") == "tool" and (
+                            "[Sonnet's Advice]" in next_msg.get("content", "") or
+                            "Advisor Error" in next_msg.get("content", "")
+                        ):
+                            skip_indices.add(i + 1)
+
+        for i, msg in enumerate(messages):
+            if i in skip_indices:
+                continue
             role = msg.get("role", "")
 
             if role == "system":
-                # Build system prompt with tool descriptions
+                # Build system prompt with tool descriptions (using cleaned prompt)
                 result.append({
                     "role": "system",
-                    "content": self._build_system_with_tools(base_system_prompt, tools),
+                    "content": self._build_system_with_tools(clean_system_prompt, tools),
                 })
 
             elif role == "tool":
                 # Convert tool result to user message
+                # Note: ask_sonnet responses are already filtered out by skip_indices above
                 content = msg.get("content", "")
                 result.append({
                     "role": "user",
@@ -121,12 +155,20 @@ class AskSonnetRenderer(ABC):
 
 # Available Tools
 
-You have access to the following tools. To use a tool, respond with a JSON object in the following format:
+You have access to the following tools. To use a tool, respond with a JSON object in this exact format:
 <tool_call>
 {{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}
 </tool_call>
 
-{tools_text}"""
+{tools_text}
+
+# Response Format
+
+You MUST respond with EITHER:
+1. A tool call using the <tool_call> format above, OR
+2. A text message to send to the user
+
+Do NOT respond with empty content. Always provide a response."""
 
     def _format_tool_call(self, tc: Any) -> str:
         """Format a tool call to JSON string."""

@@ -235,6 +235,23 @@ class Tau2Env(Env):
             self.sonnet_input_tokens += result.input_tokens
             self.sonnet_output_tokens += result.output_tokens
 
+            # Handle empty advisor response
+            if not sonnet_response or not sonnet_response.strip():
+                logger.warning("Advisor returned empty response, providing error feedback to policy")
+                # Return an error observation so the policy can continue
+                error_msg = "[Advisor Error]: The advisor returned an empty response. Please proceed without advisor help."
+                self.messages.add_tool_result(error_msg, tool_call_id="ask_sonnet_call")
+                next_obs = self.renderer.build_generation_prompt(
+                    self.messages.messages, tools=self.tools
+                )
+                self._current_obs_length = next_obs.length
+                return StepResult(
+                    next_observation=next_obs,
+                    next_stop_condition=self.stop_condition,
+                    episode_done=False,
+                    reward=0.0,
+                )
+
             # Add Sonnet's response using the renderer
             self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
 
@@ -551,6 +568,10 @@ class Tau2Dataset(RLDataset):
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
         """Get a batch of environment group builders."""
+        # Start new iteration for rollout logger (reset sampling counters)
+        if self.rollout_logger:
+            self.rollout_logger.start_iteration(index)
+
         batch_start = index * self.batch_size
         batch_end = min((index + 1) * self.batch_size, len(self.tasks))
 
@@ -602,6 +623,9 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
     tau2_user_cost_penalty: float = 0.0
+    # Logging
+    rollout_logger: RolloutLogger | None = None  # For training (sampled)
+    eval_rollout_logger: RolloutLogger | None = None  # For evaluation (all)
 
     async def __call__(self) -> tuple[RLDataset, RLDataset]:
         """Build train and test datasets."""
@@ -632,6 +656,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
             tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
             tau2_user_cost_penalty=self.tau2_user_cost_penalty,
+            rollout_logger=self.rollout_logger,
         )
 
         test_dataset = Tau2Dataset(
@@ -649,6 +674,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
             tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
             tau2_user_cost_penalty=self.tau2_user_cost_penalty,
+            rollout_logger=self.eval_rollout_logger,  # Use eval logger (logs all)
         )
 
         return train_dataset, test_dataset

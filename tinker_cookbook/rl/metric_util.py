@@ -130,6 +130,22 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         self.num_groups_to_log = num_groups_to_log
         self.temperature = temperature
 
+        # Extract rollout logger from builders (they share the same instance)
+        self._rollout_logger = None
+        for builder in self.env_group_builders_P:
+            if hasattr(builder, "rollout_logger") and builder.rollout_logger is not None:
+                self._rollout_logger = builder.rollout_logger
+                break
+
+    def set_iteration(self, iteration: int) -> None:
+        """Set the training iteration for rollout logging.
+
+        This should be called before each evaluation run to ensure rollout
+        files are labeled with the correct training iteration.
+        """
+        if self._rollout_logger is not None:
+            self._rollout_logger.start_iteration(iteration)
+
     async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
         async def run_group_rollout(builder, i):
             enable_logging = i < self.num_groups_to_log

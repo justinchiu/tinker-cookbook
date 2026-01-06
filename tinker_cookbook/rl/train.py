@@ -279,6 +279,11 @@ class Config:
 @scope
 async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client):
     ev_name = _get_evaluator_name(evaluator)
+
+    # Set iteration on evaluator for rollout logging (if supported)
+    if hasattr(evaluator, "set_iteration"):
+        evaluator.set_iteration(i_batch)
+
     with _get_logtree_scope(
         log_path=cfg.log_path,
         num_groups_to_log=cfg.num_groups_to_log,
@@ -662,6 +667,9 @@ async def do_async_training(
             if cfg.eval_every > 0 and sampling_client_eval_step % cfg.eval_every == 0:
                 with timed("run_evals", metrics):
                     for evaluator in evaluators:
+                        # Set iteration for rollout logging (if supported)
+                        if hasattr(evaluator, "set_iteration"):
+                            evaluator.set_iteration(sampling_client_eval_step)
                         eval_metrics = await evaluator(sampling_client_eval)
                         metrics.update({f"test/{k}": v for k, v in eval_metrics.items()})
                 metrics["time/evaluation_loop/total"] = time.time() - t_start

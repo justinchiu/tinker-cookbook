@@ -16,18 +16,39 @@ class RolloutLogger:
     Logger for tau2 rollout conversations.
 
     Saves full message histories (policy view) to JSON files.
-    Each episode gets its own file with metadata.
+    Supports sampling to only log a limited number of successes and failures.
     """
 
     log_dir: str
     enabled: bool = True
+    # Subdirectory name (e.g., "rollouts" or "eval_rollouts")
+    subdir: str = "rollouts"
+    # Sampling limits per iteration (0 = log all, >0 = sample)
+    max_success_per_iter: int = 3  # Log up to N successful episodes per iteration
+    max_failure_per_iter: int = 3  # Log up to N failed episodes per iteration
     _episode_count: int = field(default=0, init=False)
+    _iter_success_count: int = field(default=0, init=False)
+    _iter_failure_count: int = field(default=0, init=False)
+    _current_iter: int = field(default=0, init=False)
 
     def __post_init__(self):
         if self.enabled and self.log_dir:
-            self.rollout_path = Path(self.log_dir) / "rollouts"
+            self.rollout_path = Path(self.log_dir) / self.subdir
             self.rollout_path.mkdir(parents=True, exist_ok=True)
-            logger.info("RolloutLogger initialized at %s", self.rollout_path)
+            if self.max_success_per_iter == 0 and self.max_failure_per_iter == 0:
+                logger.info("RolloutLogger initialized at %s (logging all)", self.rollout_path)
+            else:
+                logger.info(
+                    "RolloutLogger initialized at %s (sampling: %d success, %d failure per iter)",
+                    self.rollout_path, self.max_success_per_iter, self.max_failure_per_iter
+                )
+
+    def start_iteration(self, iteration: int) -> None:
+        """Call at the start of each training iteration to reset sampling counters."""
+        self._current_iter = iteration
+        self._iter_success_count = 0
+        self._iter_failure_count = 0
+        logger.debug("RolloutLogger: starting iteration %d", iteration)
 
     def log_episode(
         self,
@@ -38,7 +59,7 @@ class RolloutLogger:
         metadata: dict[str, Any] | None = None,
     ) -> str | None:
         """
-        Log a completed episode.
+        Log a completed episode (with sampling).
 
         Args:
             domain: The tau2 domain (e.g., "retail", "airline")
@@ -48,14 +69,33 @@ class RolloutLogger:
             metadata: Additional metadata (token costs, ask_sonnet_count, etc.)
 
         Returns:
-            Path to the saved file, or None if logging is disabled
+            Path to the saved file, or None if logging is disabled/skipped
         """
         if not self.enabled or not self.log_dir:
             return None
 
+        # Check sampling limits
+        is_success = reward > 0.5  # Consider reward > 0.5 as success
+
+        if is_success:
+            if self.max_success_per_iter > 0 and self._iter_success_count >= self.max_success_per_iter:
+                return None  # Skip - already logged enough successes this iteration
+            self._iter_success_count += 1
+        else:
+            if self.max_failure_per_iter > 0 and self._iter_failure_count >= self.max_failure_per_iter:
+                return None  # Skip - already logged enough failures this iteration
+            self._iter_failure_count += 1
+
         self._episode_count += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{domain}_{task_id}_{timestamp}.json"
+        status = "success" if is_success else "failure"
+        filename = f"iter{self._current_iter:04d}_{status}_{domain}_{task_id}_{timestamp}.json"
+
+        # Ensure directory exists (safety check)
+        if not hasattr(self, 'rollout_path'):
+            self.rollout_path = Path(self.log_dir) / self.subdir
+        self.rollout_path.mkdir(parents=True, exist_ok=True)
+
         filepath = self.rollout_path / filename
 
         # Serialize messages - handle ToolCall objects

@@ -102,8 +102,8 @@ class Tau2GymWrapper:
             self.env.step, action
         )
 
-        # Parse observation type
-        obs_type, obs_content = self._parse_observation(obs)
+        # Parse observation type (pass terminated to suppress warning on episode end)
+        obs_type, obs_content = self._parse_observation(obs, terminated=terminated)
 
         logger.info(
             "Tau2 returned: obs=%r (len=%d), terminated=%s, truncated=%s",
@@ -123,17 +123,18 @@ class Tau2GymWrapper:
             info=info,
         )
 
-    def _parse_observation(self, obs: str) -> tuple[ObservationType, str]:
+    def _parse_observation(self, obs: str, terminated: bool = False) -> tuple[ObservationType, str]:
         """
         Parse tau2 observation into type and content.
 
         Tau2 observations can be:
         - "user: <text>" - user messages
         - "tool: {...}" - tool results
-        - Other formats
+        - Other formats (including empty on termination)
 
         Args:
             obs: Raw observation string
+            terminated: Whether the episode has terminated (suppresses warning for empty obs)
 
         Returns:
             Tuple of (observation type, content without prefix)
@@ -143,8 +144,10 @@ class Tau2GymWrapper:
         elif obs.startswith("tool: "):
             return ObservationType.TOOL_RESULT, obs[6:]
         else:
-            logger.warning(
-                "Unexpected obs format (not user: or tool:): %r",
-                obs[:100] + "..." if len(obs) > 100 else obs,
-            )
+            # Don't warn for empty obs on termination - that's expected
+            if not (terminated and obs == ""):
+                logger.warning(
+                    "Unexpected obs format (not user: or tool:): %r",
+                    obs[:100] + "..." if len(obs) > 100 else obs,
+                )
             return ObservationType.OTHER, obs

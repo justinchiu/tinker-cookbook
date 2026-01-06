@@ -148,6 +148,120 @@ class TestDirectRenderer:
         assert result[3]["role"] == "user"
         assert "[Tool Result]:" in result[3]["content"]
 
+    def test_render_for_advisor_strips_ask_sonnet_instructions(self, renderer):
+        """
+        CRITICAL TEST: render_for_advisor must strip ask_sonnet instructions.
+
+        This prevents the advisor from seeing instructions about delegating to itself,
+        which causes it to return meta-commentary like "I need to delegate to Claude Sonnet..."
+        instead of taking actual actions.
+        """
+        from tinker_cookbook.recipes.taubench.components import ASK_SONNET_INSTRUCTION
+
+        # System prompt WITH ask_sonnet instructions (what Qwen sees)
+        base_prompt_with_instructions = "You are a helpful assistant." + ASK_SONNET_INSTRUCTION
+
+        messages = [
+            {"role": "system", "content": base_prompt_with_instructions},
+            {"role": "user", "content": "Hello"},
+        ]
+        tools = [
+            {"function": {"name": "get_order", "description": "Get order", "parameters": {}}}
+        ]
+
+        result = renderer.render_for_advisor(messages, tools, base_prompt_with_instructions)
+
+        # The advisor's system prompt should NOT contain ask_sonnet instructions
+        advisor_system = result[0]["content"]
+        assert "ask_sonnet" not in advisor_system, (
+            "Advisor should NOT see ask_sonnet instructions! "
+            "This causes the advisor to return meta-commentary instead of actions."
+        )
+        assert "delegate" not in advisor_system.lower(), (
+            "Advisor should NOT see delegation instructions!"
+        )
+
+        # But it should still have the base prompt and tool info
+        assert "You are a helpful assistant" in advisor_system
+        assert "get_order" in advisor_system
+
+    def test_render_for_advisor_skips_previous_ask_sonnet_calls(self, renderer):
+        """
+        CRITICAL TEST: render_for_advisor must skip previous ask_sonnet calls and responses.
+
+        When Sonnet sees its own previous [Sonnet's Advice] in the message history
+        (rendered as user messages), it returns empty ~87% of the time.
+
+        The fix: skip both the ask_sonnet tool call AND the subsequent advice/error response.
+        """
+        # Simulate a conversation with a previous ask_sonnet call
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hi, I want to cancel my order"},
+            # First ask_sonnet call - should be SKIPPED
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+            # Sonnet's advice - should be SKIPPED
+            {"role": "tool", "content": "[Sonnet's Advice]:\n\nFirst, authenticate the user.", "tool_call_id": "ask_sonnet_call"},
+            # Policy's followup action
+            {"role": "assistant", "content": '<tool_call>\n{"name": "find_user", "arguments": {"email": "test@example.com"}}\n</tool_call>'},
+            {"role": "tool", "content": "user_123", "tool_call_id": "tool_call"},
+            {"role": "user", "content": "My order ID is 456"},
+            # Second ask_sonnet call - the one we're rendering for
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+        ]
+        tools = [{"function": {"name": "find_user", "description": "Find user", "parameters": {}}}]
+
+        result = renderer.render_for_advisor(messages, tools, "You are helpful.")
+
+        # Verify previous ask_sonnet call and advice are NOT in the rendered messages
+        all_content = " ".join(msg.get("content", "") for msg in result)
+
+        assert "[Sonnet's Advice]" not in all_content, (
+            "Previous Sonnet advice should be skipped! "
+            "Sonnet returns empty ~87% of the time when it sees its own previous advice."
+        )
+
+        # The current ask_sonnet call (last message) should also be skipped
+        # since it's what triggered this render_for_advisor call
+        assert result[-1]["content"] != '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'
+
+        # But the actual tool calls and results should still be present
+        assert "find_user" in all_content
+        assert "user_123" in all_content
+
+    def test_render_for_advisor_skips_advisor_errors(self, renderer):
+        """
+        render_for_advisor should also skip previous Advisor Error messages.
+
+        These provide no useful context and may confuse the advisor.
+        """
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            # Previous ask_sonnet that returned empty
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+            {"role": "tool", "content": "[Advisor Error]: The advisor returned an empty response.", "tool_call_id": "ask_sonnet_call"},
+            # Policy continued on its own
+            {"role": "assistant", "content": "How can I help you?"},
+            {"role": "user", "content": "I need help"},
+        ]
+        tools = []
+
+        result = renderer.render_for_advisor(messages, tools, "You are helpful.")
+
+        all_content = " ".join(msg.get("content", "") for msg in result)
+
+        assert "[Advisor Error]" not in all_content, (
+            "Previous advisor errors should be skipped!"
+        )
+        assert "ask_sonnet" not in all_content, (
+            "Previous ask_sonnet calls should be skipped!"
+        )
+
+        # But the conversation should still make sense
+        assert "Hello" in all_content
+        assert "How can I help you?" in all_content
+
     def test_get_tau2_action_with_tool_call_tags(self, renderer):
         """Should extract action from <tool_call> tags."""
         sonnet_response = '<tool_call>\n{"name": "get_order", "arguments": {"order_id": "123"}}\n</tool_call>'

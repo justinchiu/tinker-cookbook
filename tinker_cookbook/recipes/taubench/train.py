@@ -17,7 +17,7 @@ import chz
 import tinker
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.completers import TokenCompleter
-from tinker_cookbook.recipes.taubench.components import AskSonnetMode, EpsilonAskSonnetPolicy
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode, EpsilonAskSonnetPolicy, RolloutLogger
 from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder
 from tinker_cookbook.rl import train
 
@@ -85,6 +85,24 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
     else:
         wandb_name = run_name
 
+    # Create rollout loggers for conversation logging
+    # Training: sample 3 successes + 3 failures per iteration
+    train_rollout_logger = RolloutLogger(
+        log_dir=log_path,
+        enabled=True,
+        subdir="rollouts",
+        max_success_per_iter=3,
+        max_failure_per_iter=3,
+    )
+    # Evaluation: log ALL rollouts
+    eval_rollout_logger = RolloutLogger(
+        log_dir=log_path,
+        enabled=True,
+        subdir="eval_rollouts",
+        max_success_per_iter=0,  # 0 = no limit
+        max_failure_per_iter=0,
+    )
+
     dataset_builder = Tau2DatasetBuilder(
         batch_size=cli_config.batch_size,
         model_name_for_tokenizer=model_name,
@@ -101,6 +119,8 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
         sonnet_token_penalty_per_1k=cli_config.sonnet_token_penalty_per_1k,
         tau2_user_token_penalty_per_1k=cli_config.tau2_user_token_penalty_per_1k,
         tau2_user_cost_penalty=cli_config.tau2_user_cost_penalty,
+        rollout_logger=train_rollout_logger,
+        eval_rollout_logger=eval_rollout_logger,
     )
 
     # Create epsilon policy if enabled

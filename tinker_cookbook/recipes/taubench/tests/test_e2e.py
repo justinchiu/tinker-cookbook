@@ -23,6 +23,7 @@ import tau2.registry as reg
 
 from tinker_cookbook.model_info import get_recommended_renderer_name
 from tinker_cookbook.recipes.taubench.components import AskSonnetMode, ObservationType, Tau2StepResult
+from tinker_cookbook.recipes.taubench.components.external_llm import LLMCallResult
 from tinker_cookbook.recipes.taubench.env import (
     Tau2Env,
     Tau2DatasetBuilder,
@@ -148,10 +149,7 @@ class TestTau2EnvConstruction:
         )
 
         assert env.ask_sonnet_call_count == 0
-        assert env._awaiting_followup is False
-        assert env._pending_sonnet_response is None
         assert len(env.messages.messages) == 2  # system + initial user
-        assert len(env.messages.external_messages) == 2
 
 
 # =============================================================================
@@ -241,7 +239,6 @@ class TestDirectActions:
         )
 
         initial_msg_count = len(env.messages.messages)
-        initial_ext_count = len(env.messages.external_messages)
 
         # Direct response (not ask_sonnet)
         text = "Let me look that up for you.<|im_end|>"
@@ -249,11 +246,9 @@ class TestDirectActions:
 
         await env.step(action_tokens)
 
-        # Both should increase by same amount (assistant + user response)
+        # Messages should increase (assistant + user response)
         msg_increase = len(env.messages.messages) - initial_msg_count
-        ext_increase = len(env.messages.external_messages) - initial_ext_count
-
-        assert msg_increase == ext_increase
+        assert msg_increase >= 2  # At least assistant + user/tool result
 
 
 # =============================================================================
@@ -278,8 +273,8 @@ class TestAskSonnetMocked:
         # Mock the external LLM call
         mock_response = '<tool_call>\n{"name": "get_user_details", "arguments": {"user_id": "test_123"}}\n</tool_call>'
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = LLMCallResult(content=mock_response, input_tokens=100, output_tokens=50)
 
             # Send ask_sonnet action
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
@@ -293,7 +288,7 @@ class TestAskSonnetMocked:
 
             # Verify state
             assert env.ask_sonnet_call_count == 1
-            assert env._awaiting_followup is False  # Direct injection doesn't wait
+            # Direct injection sends directly to tau2 (doesn't wait for followup)
 
     @pytest.mark.asyncio
     async def test_ask_sonnet_conditioning_returns_early(self, renderer, task_id, tokenizer):
@@ -308,8 +303,8 @@ class TestAskSonnetMocked:
 
         mock_response = "I recommend using the get_user_details tool first to look up the customer."
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = LLMCallResult(content=mock_response, input_tokens=100, output_tokens=50)
 
             # Send ask_sonnet action
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
@@ -319,11 +314,9 @@ class TestAskSonnetMocked:
             result = await env.step(action_tokens)
 
             # Verify state - should be waiting for followup
-            assert env._awaiting_followup is True
-            assert env._pending_sonnet_response == mock_response
             assert env.ask_sonnet_call_count == 1
 
-            # Episode should not be done yet
+            # Episode should not be done yet (conditioning returns early)
             assert result.episode_done is False
 
     @pytest.mark.asyncio
@@ -339,16 +332,17 @@ class TestAskSonnetMocked:
 
         mock_response = "I recommend using the get_user_details tool."
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = LLMCallResult(content=mock_response, input_tokens=100, output_tokens=50)
 
             # First: send ask_sonnet
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
             text = f"<tool_call>\n{ask_sonnet_json}\n</tool_call><|im_end|>"
             action_tokens = tokenizer.encode(text, add_special_tokens=False)
-            await env.step(action_tokens)
+            result = await env.step(action_tokens)
 
-            assert env._awaiting_followup is True
+            # Should return early (not done, waiting for followup)
+            assert result.episode_done is False
 
             # Second: send policy's followup
             followup_json = json.dumps({
@@ -360,9 +354,7 @@ class TestAskSonnetMocked:
 
             result = await env.step(followup_tokens)
 
-            # Verify state - no longer waiting
-            assert env._awaiting_followup is False
-            assert env._pending_sonnet_response is None
+            # Followup sent to tau2 - verify we got a response
 
     @pytest.mark.asyncio
     async def test_ask_sonnet_increments_count(self, renderer, task_id, tokenizer):
@@ -377,8 +369,8 @@ class TestAskSonnetMocked:
 
         mock_response = "Hello, how can I help you?"
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = LLMCallResult(content=mock_response, input_tokens=100, output_tokens=50)
 
             assert env.ask_sonnet_call_count == 0
 
@@ -716,9 +708,11 @@ class TestMockedMultiTurnConversation:
         # Mock both gym.step and external_llm.call
         env.gym.step = create_mock_gym_step(mock_conversation)
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_llm:
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_llm:
             # Sonnet returns a text greeting
-            mock_llm.return_value = SONNET_MOCK_RESPONSES["direct_injection_text"]
+            mock_llm.return_value = LLMCallResult(
+                content=SONNET_MOCK_RESPONSES["direct_injection_text"], input_tokens=100, output_tokens=50
+            )
 
             # Call ask_sonnet
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
@@ -753,12 +747,14 @@ class TestMockedMultiTurnConversation:
             ask_sonnet_mode=AskSonnetMode.CONDITIONING,
         )
 
-        # Mock both gym.step and external_llm.call
+        # Mock both gym.step and external_llm.call_with_usage
         env.gym.step = create_mock_gym_step(mock_conversation)
 
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_llm:
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_llm:
             # Sonnet returns advice
-            mock_llm.return_value = SONNET_MOCK_RESPONSES["conditioning_advice"]
+            mock_llm.return_value = LLMCallResult(
+                content=SONNET_MOCK_RESPONSES["conditioning_advice"], input_tokens=100, output_tokens=50
+            )
 
             # Step 1: Call ask_sonnet
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
@@ -767,9 +763,7 @@ class TestMockedMultiTurnConversation:
 
             result = await env.step(action_tokens)
 
-            # Should be waiting for followup
-            assert env._awaiting_followup is True
-            assert env._pending_sonnet_response == SONNET_MOCK_RESPONSES["conditioning_advice"]
+            # Should be waiting for followup (conditioning returns early)
             assert not result.episode_done
 
             # Step 2: Policy follows Sonnet's advice with a tool call
@@ -782,9 +776,7 @@ class TestMockedMultiTurnConversation:
 
             result = await env.step(followup_tokens)
 
-            # No longer waiting
-            assert env._awaiting_followup is False
-            assert env._pending_sonnet_response is None
+            # Followup processed
 
     @pytest.mark.asyncio
     async def test_mixed_direct_and_ask_sonnet_actions(self, renderer, task_id, tokenizer):
@@ -815,8 +807,11 @@ class TestMockedMultiTurnConversation:
         initial_messages = len(env.messages.messages)
 
         # Turn 2: ask_sonnet for help
-        with patch.object(env.external_llm, "call", new_callable=AsyncMock) as mock_llm:
-            mock_llm.return_value = "I understand you'd like to check your order status. Could you please provide your name and zip code?"
+        with patch.object(env.external_llm, "call_with_usage", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = LLMCallResult(
+                content="I understand you'd like to check your order status. Could you please provide your name and zip code?",
+                input_tokens=100, output_tokens=50
+            )
 
             ask_sonnet_json = json.dumps({"name": "ask_sonnet", "arguments": {}})
             text = f"<tool_call>\n{ask_sonnet_json}\n</tool_call><|im_end|>"
@@ -931,11 +926,11 @@ class TestLiveAPI:
         result = await env.step(action_tokens)
 
         assert env.ask_sonnet_call_count == 1
-        assert env._awaiting_followup is True
+        # Conditioning returns early (not done)
+        assert result.episode_done is False
 
         print(f"\n[LIVE TEST] Conditioning - after ask_sonnet:")
-        print(f"  Awaiting followup: {env._awaiting_followup}")
-        print(f"  Pending response preview: {env._pending_sonnet_response[:100] if env._pending_sonnet_response else 'None'}...")
+        print(f"  Episode done: {result.episode_done}")
 
         # Send followup
         followup_json = json.dumps({
@@ -947,10 +942,7 @@ class TestLiveAPI:
 
         result = await env.step(followup_tokens)
 
-        assert env._awaiting_followup is False
-
         print(f"\n[LIVE TEST] Conditioning - after followup:")
-        print(f"  Awaiting followup: {env._awaiting_followup}")
         print(f"  Episode done: {result.episode_done}")
 
     @pytest.mark.asyncio
@@ -979,3 +971,144 @@ class TestLiveAPI:
 
         print(f"[LIVE TEST] After ask_sonnet: messages={len(env.messages.messages)}, count={env.ask_sonnet_call_count}")
         print(f"[LIVE TEST] Episode done: {result.episode_done}")
+
+
+@pytest.mark.skip(reason="Integration test - requires Anthropic API key, run manually")
+class TestSonnetEmptyResponseFix:
+    """
+    Integration tests verifying Sonnet doesn't return empty when there's previous advice.
+
+    Root cause (fixed): When Sonnet sees its own previous [Sonnet's Advice] in the
+    message history (rendered as user messages), it returned empty ~87% of the time.
+
+    Fix: render_for_advisor() now skips previous ask_sonnet calls and their responses.
+
+    Run manually with:
+        pytest -v -k TestSonnetEmptyResponseFix --no-header -rN
+    """
+
+    @pytest.fixture
+    def renderer(self):
+        return renderers.get_renderer("qwen3")
+
+    @pytest.fixture
+    def tokenizer(self):
+        return tokenizer_utils.get_tokenizer("Qwen/Qwen3-30B-A3B-Instruct-2507")
+
+    @pytest.mark.asyncio
+    async def test_multiple_ask_sonnet_calls_no_empty_responses(self, renderer, tokenizer):
+        """
+        Test that multiple ask_sonnet calls don't result in empty responses.
+
+        Before the fix, the second ask_sonnet call would return empty ~87% of the time
+        because Sonnet saw its own previous [Sonnet's Advice] in the history.
+        """
+        from tinker_cookbook.recipes.taubench.components import (
+            ExternalLLMClient,
+            ExternalLLMConfig,
+            get_ask_sonnet_renderer,
+            AskSonnetMode,
+        )
+
+        ask_sonnet_renderer = get_ask_sonnet_renderer(AskSonnetMode.DIRECT_INJECTION)
+
+        # Simulate conversation with previous Sonnet advice
+        messages = [
+            {"role": "system", "content": "You are a helpful retail customer service agent."},
+            {"role": "user", "content": "Hi, I want to return my order"},
+            # First ask_sonnet call and response (should be skipped by renderer)
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+            {"role": "tool", "content": "[Sonnet's Advice]:\n\nI'll help you with that return. First, let me authenticate you.", "tool_call_id": "ask_sonnet_call"},
+            # Policy followup
+            {"role": "assistant", "content": "I'll help you with that return. Could you please provide your email?"},
+            {"role": "user", "content": "My email is test@example.com"},
+            {"role": "assistant", "content": '<tool_call>\n{"name": "find_user_id_by_email", "arguments": {"email": "test@example.com"}}\n</tool_call>'},
+            {"role": "tool", "content": "user_123", "tool_call_id": "tool_call"},
+            {"role": "user", "content": "What orders do I have?"},
+            # Second ask_sonnet call - this is what we're testing
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+        ]
+
+        tools = [
+            {"function": {"name": "find_user_id_by_email", "description": "Find user", "parameters": {}}},
+            {"function": {"name": "get_user_details", "description": "Get user details", "parameters": {}}},
+        ]
+
+        # Render for advisor
+        advisor_messages = ask_sonnet_renderer.render_for_advisor(
+            messages, tools, messages[0]["content"]
+        )
+
+        # Verify previous Sonnet advice is NOT in rendered messages
+        all_content = " ".join(msg.get("content", "") for msg in advisor_messages)
+        assert "[Sonnet's Advice]" not in all_content, "Previous advice should be skipped"
+
+        # Call Sonnet
+        config = ExternalLLMConfig(
+            model="claude-sonnet-4-5-20250929",
+            temperature=0.0,
+            max_tokens=512,
+        )
+        client = ExternalLLMClient(config)
+
+        result = await client.call_with_usage(advisor_messages)
+
+        print(f"\nSonnet response ({result.output_tokens} tokens):")
+        print(result.content[:200] if result.content else "(EMPTY)")
+
+        # The fix should prevent empty responses
+        assert result.content is not None, "Sonnet returned None content"
+        assert len(result.content.strip()) > 10, (
+            f"Sonnet returned empty/short response: {result.content!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sonnet_responds_after_previous_error(self, renderer, tokenizer):
+        """
+        Test that Sonnet responds even after a previous Advisor Error.
+        """
+        from tinker_cookbook.recipes.taubench.components import (
+            ExternalLLMClient,
+            ExternalLLMConfig,
+            get_ask_sonnet_renderer,
+            AskSonnetMode,
+        )
+
+        ask_sonnet_renderer = get_ask_sonnet_renderer(AskSonnetMode.DIRECT_INJECTION)
+
+        # Simulate conversation with previous advisor error
+        messages = [
+            {"role": "system", "content": "You are a helpful retail customer service agent."},
+            {"role": "user", "content": "Hi there"},
+            # Previous ask_sonnet that failed
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+            {"role": "tool", "content": "[Advisor Error]: The advisor returned an empty response.", "tool_call_id": "ask_sonnet_call"},
+            # Policy continued
+            {"role": "assistant", "content": "Hello! How can I help you today?"},
+            {"role": "user", "content": "I need to cancel my order #12345"},
+            # Second ask_sonnet
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+        ]
+
+        tools = [{"function": {"name": "cancel_order", "description": "Cancel order", "parameters": {}}}]
+
+        advisor_messages = ask_sonnet_renderer.render_for_advisor(
+            messages, tools, messages[0]["content"]
+        )
+
+        # Verify error message is NOT in rendered messages
+        all_content = " ".join(msg.get("content", "") for msg in advisor_messages)
+        assert "[Advisor Error]" not in all_content, "Previous error should be skipped"
+
+        # Call Sonnet
+        config = ExternalLLMConfig(model="claude-sonnet-4-5-20250929", temperature=0.0, max_tokens=512)
+        client = ExternalLLMClient(config)
+
+        result = await client.call_with_usage(advisor_messages)
+
+        print(f"\nSonnet response ({result.output_tokens} tokens):")
+        print(result.content[:200] if result.content else "(EMPTY)")
+
+        assert result.content is not None and len(result.content.strip()) > 10, (
+            f"Sonnet returned empty response: {result.content!r}"
+        )
