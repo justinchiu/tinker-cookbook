@@ -42,10 +42,19 @@ def compute_kl_sample_train(
 
     flat_sampling_logprobs = torch.cat(all_sampling_logprobs)
     entropy_sample = -flat_sampling_logprobs.mean().item()
+
+    # Importance ratio: exp(log_pi_train - log_pi_sample) = exp(-flat_diffs)
+    # flat_diffs = log_pi_sample - log_pi_train, so ratio = exp(-flat_diffs)
+    importance_ratios = torch.exp(-flat_diffs)
+
     return {
         "optim/kl_sample_train_v1": kl_sample_train_v1,
         "optim/kl_sample_train_v2": kl_sample_train_v2,
         "optim/entropy": entropy_sample,
+        "optim/importance_ratio_mean": importance_ratios.mean().item(),
+        "optim/importance_ratio_std": importance_ratios.std().item(),
+        "optim/importance_ratio_max": importance_ratios.max().item(),
+        "optim/importance_ratio_min": importance_ratios.min().item(),
     }
 
 
