@@ -267,12 +267,17 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
             return not is_first_turn and self._rng.random() < self.current_epsilon
 
         elif self.mode == ExplorationMode.RAO_BLACKWELL:
-            # Deterministic: force on assistant turn == rollout_idx
+            # Deterministic: force on assistant turn >= rollout_idx (first valid opportunity)
             # Rollout 0 is baseline (no forcing), rollouts 1-11 force on turn 1-11
+            # If the target turn had consecutive ask_sonnet, postpone to next valid turn
             rollout_idx = ctx['rollout_idx']
             if rollout_idx == 0:
                 return False  # Baseline rollout - never force
-            return turn_count == rollout_idx
+            # Only force once per episode, on or after target turn
+            already_forced = len(ctx['forced_on_turns']) > 0
+            if already_forced:
+                return False
+            return turn_count >= rollout_idx
 
         return False
 

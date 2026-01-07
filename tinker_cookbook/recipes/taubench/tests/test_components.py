@@ -871,17 +871,27 @@ class TestRaoBlackwellExploration:
             assert policy_rb._should_force() is False, f"Rollout 0 should never force (turn {turn})"
 
     def test_rb_rollout_n_forces_on_turn_n(self, policy_rb):
-        """Test that rollout N forces ask_sonnet on turn N only."""
+        """Test that rollout N forces ask_sonnet on first valid turn >= N."""
         for rollout_idx in range(1, 12):
             policy_rb.start_episode(rollout_idx=rollout_idx)
             for turn in range(12):
                 self._set_turn_count(turn)
-                expected = (turn == rollout_idx)
+                # Should force on first turn >= rollout_idx (if not already forced)
+                expected = (turn >= rollout_idx)
                 actual = policy_rb._should_force()
                 assert actual == expected, (
                     f"Rollout {rollout_idx}, turn {turn}: "
                     f"expected should_force={expected}, got {actual}"
                 )
+                # Simulate forcing on target turn to test "only force once"
+                if turn == rollout_idx:
+                    self._append_forced_turn(turn)
+                    # After forcing, should not force again
+                    self._set_turn_count(turn + 1)
+                    assert policy_rb._should_force() is False, (
+                        f"Rollout {rollout_idx}: should not force after already forced"
+                    )
+                    break  # Move to next rollout_idx
 
     def test_rb_first_turn_never_forces(self, policy_rb):
         """Test that first turn (greeting) is never forced even for rollout 1+."""
@@ -976,3 +986,26 @@ class TestRaoBlackwellExploration:
         # But if last action was ask_sonnet, don't force
         self._set_last_ask_sonnet(True)
         assert policy_rb._should_force() is False
+
+    def test_rb_postpones_forcing_after_consecutive(self, policy_rb):
+        """Test that RB postpones forcing to next valid turn if target turn has consecutive ask_sonnet."""
+        # Rollout 2 should force on turn 2, but if turn 1 was ask_sonnet, postpone to turn 3
+        policy_rb.start_episode(rollout_idx=2)
+
+        # Turn 1: policy naturally called ask_sonnet
+        self._set_turn_count(1)
+        self._set_last_ask_sonnet(True)
+
+        # Turn 2: target turn, but can't force (consecutive)
+        self._set_turn_count(2)
+        assert policy_rb._should_force() is False, "Should not force on turn 2 due to consecutive"
+
+        # Turn 3: last action was NOT ask_sonnet, now we can force
+        self._set_last_ask_sonnet(False)
+        self._set_turn_count(3)
+        assert policy_rb._should_force() is True, "Should force on turn 3 (postponed from turn 2)"
+
+        # After forcing, don't force again
+        self._append_forced_turn(3)
+        self._set_turn_count(4)
+        assert policy_rb._should_force() is False, "Should not force again after already forced"
