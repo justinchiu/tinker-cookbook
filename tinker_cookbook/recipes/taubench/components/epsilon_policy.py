@@ -7,6 +7,7 @@ This enables exploration of when ask_sonnet is helpful, with the policy learning
 
 import logging
 import random
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 import tinker
@@ -14,6 +15,9 @@ from tinker_cookbook.completers import TokenCompleter, TokensWithLogprobs, StopC
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 from tinker_cookbook.recipes.taubench.components.types import ExplorationMode
+
+# Context variable for tracking rollout state in async concurrent rollouts
+_rollout_ctx: ContextVar[dict] = ContextVar('rollout_ctx', default=None)
 
 logger = logging.getLogger(__name__)
 
@@ -159,11 +163,9 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     _tokenizer: object = field(default=None, init=False, repr=False)
     _ask_sonnet_tokens: list[int] = field(default=None, init=False, repr=False)
     _current_step: int = field(default=0, init=False)
-    _assistant_turn_count: int = field(default=0, init=False)
-    _current_rollout_idx: int = field(default=0, init=False)
-    _forced_on_turns: list[int] = field(default_factory=list, init=False)  # Which turns were forced this episode
-    _last_action_was_ask_sonnet: bool = field(default=False, init=False)  # Prevent consecutive ask_sonnet
     _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
+    # Note: Per-rollout state (turn_count, forced_turns, etc.) is tracked via _rollout_ctx ContextVar
+    # to handle concurrent async rollouts correctly
 
     def __post_init__(self):
         self._rng = random.Random(self.seed)
@@ -207,25 +209,33 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         return self._metrics
 
     def start_episode(self, rollout_idx: int = 0):
-        """Call at the start of each episode to reset turn counter."""
-        self._assistant_turn_count = 0
-        self._current_rollout_idx = rollout_idx
-        self._forced_on_turns = []
-        self._last_action_was_ask_sonnet = False
+        """Call at the start of each episode to reset turn counter.
+
+        Uses ContextVar to track per-rollout state for async concurrency safety.
+        """
+        ctx = {
+            'rollout_idx': rollout_idx,
+            'assistant_turn_count': 0,
+            'forced_on_turns': [],
+            'last_action_was_ask_sonnet': False,
+        }
+        _rollout_ctx.set(ctx)
 
     def end_episode(self):
         """Call at the end of each episode to update metrics."""
-        if self._forced_on_turns:
+        ctx = _rollout_ctx.get()
+        if ctx and ctx['forced_on_turns']:
             logger.info(
                 "Episode ended: rollout=%d, forced_on_turns=%s, total_turns=%d",
-                self._current_rollout_idx, self._forced_on_turns, self._assistant_turn_count
+                ctx['rollout_idx'], ctx['forced_on_turns'], ctx['assistant_turn_count']
             )
         self._metrics.end_episode()
 
     @property
     def forced_on_turns(self) -> list[int]:
         """Get list of turns where ask_sonnet was forced this episode."""
-        return self._forced_on_turns.copy()
+        ctx = _rollout_ctx.get()
+        return ctx['forced_on_turns'].copy() if ctx else []
 
     def step(self):
         """Call after each training step to update epsilon decay."""
@@ -241,10 +251,15 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
 
     def _should_force(self) -> bool:
         """Determine if we should force ask_sonnet based on exploration mode."""
-        is_first_turn = self._assistant_turn_count == 0
+        ctx = _rollout_ctx.get()
+        if not ctx:
+            return False
+
+        turn_count = ctx['assistant_turn_count']
+        is_first_turn = turn_count == 0
 
         # Never force consecutive ask_sonnet calls
-        if self._last_action_was_ask_sonnet:
+        if ctx['last_action_was_ask_sonnet']:
             return False
 
         if self.mode == ExplorationMode.EPSILON_GREEDY:
@@ -254,9 +269,10 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         elif self.mode == ExplorationMode.RAO_BLACKWELL:
             # Deterministic: force on assistant turn == rollout_idx
             # Rollout 0 is baseline (no forcing), rollouts 1-11 force on turn 1-11
-            if self._current_rollout_idx == 0:
+            rollout_idx = ctx['rollout_idx']
+            if rollout_idx == 0:
                 return False  # Baseline rollout - never force
-            return self._assistant_turn_count == self._current_rollout_idx
+            return turn_count == rollout_idx
 
         return False
 
@@ -300,22 +316,26 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         if self.sampling_client is None:
             raise ValueError("sampling_client must be set before calling epsilon policy")
 
+        ctx = _rollout_ctx.get()
+        if ctx is None:
+            raise ValueError("start_episode() must be called before sampling")
+
         # Check if we should force ask_sonnet based on exploration mode
         should_force = self._should_force()
 
         if should_force:
-            forced_turn = self._assistant_turn_count
+            forced_turn = ctx['assistant_turn_count']
             logger.debug(
                 "Forcing ask_sonnet (mode=%s, turn=%d, rollout=%d, step=%d)",
-                self.mode.value, forced_turn, self._current_rollout_idx, self._current_step
+                self.mode.value, forced_turn, ctx['rollout_idx'], self._current_step
             )
 
             # Get real logprobs from the model for correct importance ratios
             logprobs = await self._get_logprobs_for_forced_action(model_input)
 
-            self._forced_on_turns.append(forced_turn)
-            self._assistant_turn_count += 1
-            self._last_action_was_ask_sonnet = True
+            ctx['forced_on_turns'].append(forced_turn)
+            ctx['assistant_turn_count'] += 1
+            ctx['last_action_was_ask_sonnet'] = True
             self._metrics.record_forced_ask_sonnet()
 
             return TokensWithLogprobs(
@@ -328,15 +348,15 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
             self.sampling_client, self.max_tokens, self.temperature
         )
         result = await base_policy(model_input, stop)
-        self._assistant_turn_count += 1
+        ctx['assistant_turn_count'] += 1
 
         # Track what the policy chose and update consecutive ask_sonnet flag
         is_ask_sonnet = self._is_ask_sonnet_action(result.tokens)
-        self._last_action_was_ask_sonnet = is_ask_sonnet
+        ctx['last_action_was_ask_sonnet'] = is_ask_sonnet
 
         if is_ask_sonnet:
             self._metrics.record_policy_ask_sonnet()
-            if self._assistant_turn_count == 1:
+            if ctx['assistant_turn_count'] == 1:
                 logger.warning("Policy called ask_sonnet on first turn (greeting)")
         else:
             self._metrics.record_policy_other()

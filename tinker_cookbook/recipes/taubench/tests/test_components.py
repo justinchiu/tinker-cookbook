@@ -802,7 +802,12 @@ class TestExplorationMode:
 
 
 class TestRaoBlackwellExploration:
-    """Tests for Rao-Blackwell exploration mode in EpsilonAskSonnetPolicy."""
+    """Tests for Rao-Blackwell exploration mode in EpsilonAskSonnetPolicy.
+
+    Note: These tests access the ContextVar state via _rollout_ctx to simulate
+    turn progression and test forcing logic. In production, the state is managed
+    automatically by start_episode() and __call__().
+    """
 
     @pytest.fixture
     def policy_rb(self):
@@ -823,22 +828,46 @@ class TestRaoBlackwellExploration:
             initial_epsilon=1.0,  # Always force for testing
         )
 
+    def _get_ctx(self):
+        """Get the current rollout context."""
+        from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
+        return _rollout_ctx.get()
+
+    def _set_turn_count(self, turn: int):
+        """Set the assistant turn count in context."""
+        ctx = self._get_ctx()
+        if ctx:
+            ctx['assistant_turn_count'] = turn
+
+    def _set_last_ask_sonnet(self, value: bool):
+        """Set the last_action_was_ask_sonnet flag in context."""
+        ctx = self._get_ctx()
+        if ctx:
+            ctx['last_action_was_ask_sonnet'] = value
+
+    def _append_forced_turn(self, turn: int):
+        """Append a turn to forced_on_turns list in context."""
+        ctx = self._get_ctx()
+        if ctx:
+            ctx['forced_on_turns'].append(turn)
+
     def test_policy_mode_initialization(self, policy_rb, policy_epsilon):
         """Test that policies are initialized with correct mode."""
         assert policy_rb.mode == ExplorationMode.RAO_BLACKWELL
         assert policy_epsilon.mode == ExplorationMode.EPSILON_GREEDY
 
     def test_start_episode_sets_rollout_idx(self, policy_rb):
-        """Test that start_episode sets the rollout index."""
+        """Test that start_episode sets the rollout index in context."""
         policy_rb.start_episode(rollout_idx=5)
-        assert policy_rb._current_rollout_idx == 5
-        assert policy_rb._assistant_turn_count == 0
+        ctx = self._get_ctx()
+        assert ctx['rollout_idx'] == 5
+        assert ctx['assistant_turn_count'] == 0
 
     def test_rb_rollout_0_never_forces(self, policy_rb):
         """Test that rollout 0 (baseline) never forces ask_sonnet."""
         policy_rb.start_episode(rollout_idx=0)
         for turn in range(10):
-            policy_rb._assistant_turn_count = turn
+            self._set_turn_count(turn)
             assert policy_rb._should_force() is False, f"Rollout 0 should never force (turn {turn})"
 
     def test_rb_rollout_n_forces_on_turn_n(self, policy_rb):
@@ -846,7 +875,7 @@ class TestRaoBlackwellExploration:
         for rollout_idx in range(1, 12):
             policy_rb.start_episode(rollout_idx=rollout_idx)
             for turn in range(12):
-                policy_rb._assistant_turn_count = turn
+                self._set_turn_count(turn)
                 expected = (turn == rollout_idx)
                 actual = policy_rb._should_force()
                 assert actual == expected, (
@@ -858,23 +887,23 @@ class TestRaoBlackwellExploration:
         """Test that first turn (greeting) is never forced even for rollout 1+."""
         # Rollout 1 should force on turn 1, not turn 0
         policy_rb.start_episode(rollout_idx=1)
-        policy_rb._assistant_turn_count = 0
+        self._set_turn_count(0)
         assert policy_rb._should_force() is False
 
-        policy_rb._assistant_turn_count = 1
+        self._set_turn_count(1)
         assert policy_rb._should_force() is True
 
     def test_epsilon_first_turn_never_forces(self, policy_epsilon):
         """Test that epsilon-greedy never forces on first turn."""
         policy_epsilon.start_episode(rollout_idx=0)
-        policy_epsilon._assistant_turn_count = 0
+        self._set_turn_count(0)
         # Even with epsilon=1.0, first turn should not force
         assert policy_epsilon._should_force() is False
 
     def test_epsilon_subsequent_turns_can_force(self, policy_epsilon):
         """Test that epsilon-greedy can force on subsequent turns."""
         policy_epsilon.start_episode(rollout_idx=0)
-        policy_epsilon._assistant_turn_count = 1
+        self._set_turn_count(1)
         # With epsilon=1.0, should always force on non-first turns
         assert policy_epsilon._should_force() is True
 
@@ -890,15 +919,15 @@ class TestRaoBlackwellExploration:
         assert policy_rb.forced_on_turns == []
 
         # Simulate forcing on turn 3
-        policy_rb._assistant_turn_count = 3
-        policy_rb._forced_on_turns.append(3)
+        self._set_turn_count(3)
+        self._append_forced_turn(3)
 
         assert policy_rb.forced_on_turns == [3]
 
     def test_forced_on_turns_reset_on_new_episode(self, policy_rb):
         """Test that forced_on_turns resets on new episode."""
         policy_rb.start_episode(rollout_idx=3)
-        policy_rb._forced_on_turns.append(3)
+        self._append_forced_turn(3)
         assert policy_rb.forced_on_turns == [3]
 
         # Start new episode - should reset
@@ -910,40 +939,40 @@ class TestRaoBlackwellExploration:
         policy_epsilon.start_episode(rollout_idx=0)
 
         # Simulate multiple forced turns (epsilon=1.0 always forces after turn 0)
-        policy_epsilon._assistant_turn_count = 1
-        policy_epsilon._forced_on_turns.append(1)
-        policy_epsilon._assistant_turn_count = 3
-        policy_epsilon._forced_on_turns.append(3)
+        self._set_turn_count(1)
+        self._append_forced_turn(1)
+        self._set_turn_count(3)
+        self._append_forced_turn(3)
 
         assert policy_epsilon.forced_on_turns == [1, 3]
 
     def test_no_consecutive_ask_sonnet_forcing(self, policy_epsilon):
         """Test that consecutive ask_sonnet forcing is prevented."""
         policy_epsilon.start_episode(rollout_idx=0)
-        policy_epsilon._assistant_turn_count = 1
+        self._set_turn_count(1)
 
         # First call should force (epsilon=1.0)
         assert policy_epsilon._should_force() is True
 
         # Simulate that ask_sonnet was taken
-        policy_epsilon._last_action_was_ask_sonnet = True
-        policy_epsilon._assistant_turn_count = 2
+        self._set_last_ask_sonnet(True)
+        self._set_turn_count(2)
 
         # Should NOT force on next turn (consecutive prevention)
         assert policy_epsilon._should_force() is False
 
         # After a non-ask_sonnet action, can force again
-        policy_epsilon._last_action_was_ask_sonnet = False
-        policy_epsilon._assistant_turn_count = 3
+        self._set_last_ask_sonnet(False)
+        self._set_turn_count(3)
         assert policy_epsilon._should_force() is True
 
     def test_no_consecutive_ask_sonnet_rao_blackwell(self, policy_rb):
         """Test that Rao-Blackwell also prevents consecutive ask_sonnet."""
         # Rollout 2 should force on turn 2
         policy_rb.start_episode(rollout_idx=2)
-        policy_rb._assistant_turn_count = 2
+        self._set_turn_count(2)
         assert policy_rb._should_force() is True
 
         # But if last action was ask_sonnet, don't force
-        policy_rb._last_action_was_ask_sonnet = True
+        self._set_last_ask_sonnet(True)
         assert policy_rb._should_force() is False
