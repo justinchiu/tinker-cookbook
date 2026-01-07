@@ -778,3 +778,36 @@ class TestRaoBlackwellExploration:
         metrics = policy_rb.get_metrics_and_reset()
         assert "epsilon_policy/mode" in metrics
         assert metrics["epsilon_policy/mode"] == "rao_blackwell"
+
+    def test_forced_on_turns_tracking(self, policy_rb):
+        """Test that forced_on_turns tracks which turns were forced."""
+        policy_rb.start_episode(rollout_idx=3)
+        assert policy_rb.forced_on_turns == []
+
+        # Simulate forcing on turn 3
+        policy_rb._assistant_turn_count = 3
+        policy_rb._forced_on_turns.append(3)
+
+        assert policy_rb.forced_on_turns == [3]
+
+    def test_forced_on_turns_reset_on_new_episode(self, policy_rb):
+        """Test that forced_on_turns resets on new episode."""
+        policy_rb.start_episode(rollout_idx=3)
+        policy_rb._forced_on_turns.append(3)
+        assert policy_rb.forced_on_turns == [3]
+
+        # Start new episode - should reset
+        policy_rb.start_episode(rollout_idx=5)
+        assert policy_rb.forced_on_turns == []
+
+    def test_forced_on_turns_multiple_epsilon(self, policy_epsilon):
+        """Test that epsilon mode can force multiple turns."""
+        policy_epsilon.start_episode(rollout_idx=0)
+
+        # Simulate multiple forced turns (epsilon=1.0 always forces after turn 0)
+        policy_epsilon._assistant_turn_count = 1
+        policy_epsilon._forced_on_turns.append(1)
+        policy_epsilon._assistant_turn_count = 3
+        policy_epsilon._forced_on_turns.append(3)
+
+        assert policy_epsilon.forced_on_turns == [1, 3]

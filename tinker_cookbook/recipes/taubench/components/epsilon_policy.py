@@ -161,6 +161,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     _current_step: int = field(default=0, init=False)
     _assistant_turn_count: int = field(default=0, init=False)
     _current_rollout_idx: int = field(default=0, init=False)
+    _forced_on_turns: list[int] = field(default_factory=list, init=False)  # Which turns were forced this episode
     _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
 
     def __post_init__(self):
@@ -208,10 +209,21 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         """Call at the start of each episode to reset turn counter."""
         self._assistant_turn_count = 0
         self._current_rollout_idx = rollout_idx
+        self._forced_on_turns = []
 
     def end_episode(self):
         """Call at the end of each episode to update metrics."""
+        if self._forced_on_turns:
+            logger.info(
+                "Episode ended: rollout=%d, forced_on_turns=%s, total_turns=%d",
+                self._current_rollout_idx, self._forced_on_turns, self._assistant_turn_count
+            )
         self._metrics.end_episode()
+
+    @property
+    def forced_on_turns(self) -> list[int]:
+        """Get list of turns where ask_sonnet was forced this episode."""
+        return self._forced_on_turns.copy()
 
     def step(self):
         """Call after each training step to update epsilon decay."""
@@ -286,14 +298,16 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         should_force = self._should_force()
 
         if should_force:
+            forced_turn = self._assistant_turn_count
             logger.debug(
                 "Forcing ask_sonnet (mode=%s, turn=%d, rollout=%d, step=%d)",
-                self.mode.value, self._assistant_turn_count, self._current_rollout_idx, self._current_step
+                self.mode.value, forced_turn, self._current_rollout_idx, self._current_step
             )
 
             # Get real logprobs from the model for correct importance ratios
             logprobs = await self._get_logprobs_for_forced_action(model_input)
 
+            self._forced_on_turns.append(forced_turn)
             self._assistant_turn_count += 1
             self._metrics.record_forced_ask_sonnet()
 
