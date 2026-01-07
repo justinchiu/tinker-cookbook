@@ -59,28 +59,18 @@ class AskSonnetRenderer(ABC):
         # "I need to delegate this to Claude Sonnet..." instead of taking action.
         clean_system_prompt = _ASK_SONNET_INSTRUCTION_PATTERN.sub("", base_system_prompt)
 
+        # Remove final ask_sonnet turn if present.
+        # Sonnet returns empty responses when ask_sonnet is the final turn
+        # in certain conversation patterns. Simply removing it fixes the issue.
+        messages_to_render = list(messages)
+        if messages_to_render:
+            last_msg = messages_to_render[-1]
+            if last_msg.get("role") == "assistant" and "ask_sonnet" in last_msg.get("content", ""):
+                messages_to_render = messages_to_render[:-1]
+
         result = []
 
-        # Track indices to skip (ask_sonnet calls and their responses)
-        skip_indices = set()
-        for i, msg in enumerate(messages):
-            # Skip ask_sonnet tool calls
-            if msg.get("role") == "assistant":
-                content = msg.get("content", "")
-                if "ask_sonnet" in content:
-                    skip_indices.add(i)
-                    # Also skip the next message if it's the tool result
-                    if i + 1 < len(messages):
-                        next_msg = messages[i + 1]
-                        if next_msg.get("role") == "tool" and (
-                            "[Sonnet's Advice]" in next_msg.get("content", "") or
-                            "Advisor Error" in next_msg.get("content", "")
-                        ):
-                            skip_indices.add(i + 1)
-
-        for i, msg in enumerate(messages):
-            if i in skip_indices:
-                continue
+        for msg in messages_to_render:
             role = msg.get("role", "")
 
             if role == "system":
@@ -92,7 +82,6 @@ class AskSonnetRenderer(ABC):
 
             elif role == "tool":
                 # Convert tool result to user message
-                # Note: ask_sonnet responses are already filtered out by skip_indices above
                 content = msg.get("content", "")
                 result.append({
                     "role": "user",

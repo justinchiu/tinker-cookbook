@@ -82,6 +82,7 @@ class Tau2Env(Env):
 
         # Track ask_sonnet calls for reward computation
         self.ask_sonnet_call_count: int = 0
+        self._last_action_was_ask_sonnet: bool = False  # Track consecutive ask_sonnet calls
 
         # Token cost tracking
         self.sonnet_input_tokens: int = 0
@@ -218,8 +219,26 @@ class Tau2Env(Env):
 
         # Check for ask_sonnet
         if self.action_parser.is_ask_sonnet(parsed) and self.external_llm is not None:
+            # Check for consecutive ask_sonnet calls (policy not following advice)
+            if self._last_action_was_ask_sonnet:
+                logger.warning(
+                    "Consecutive ask_sonnet calls detected for task %s - terminating episode",
+                    self.task_id,
+                )
+                self._log_episode(reward=0.0)
+                current_obs = self.renderer.build_generation_prompt(
+                    self.messages.messages, tools=self.tools
+                )
+                return StepResult(
+                    next_observation=current_obs,
+                    next_stop_condition=self.stop_condition,
+                    episode_done=True,
+                    reward=0.0,
+                )
+
             logger.info("ask_sonnet called, delegating to external LLM")
             self.ask_sonnet_call_count += 1
+            self._last_action_was_ask_sonnet = True
 
             # Add ask_sonnet call to messages
             self.messages.add_ask_sonnet_call(parsed.original_message)
@@ -272,6 +291,7 @@ class Tau2Env(Env):
                 )
             else:
                 # Direct: send Sonnet's response to tau2 immediately
+                self._last_action_was_ask_sonnet = False  # Reset - Sonnet took an action
                 action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
                 # Add assistant message with proper <tool_call> format
                 # (action_str is raw JSON, need to wrap it for the message)
@@ -285,6 +305,7 @@ class Tau2Env(Env):
                 return await self._send_to_tau2(action_str)
 
         # Not ask_sonnet: add to messages and send to tau2
+        self._last_action_was_ask_sonnet = False  # Reset flag
         self.messages.add_assistant_message_dict(parsed.original_message)
         action_str = self.action_parser.to_tau2_action(parsed)
         return await self._send_to_tau2(action_str)

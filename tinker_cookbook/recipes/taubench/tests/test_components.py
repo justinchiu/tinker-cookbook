@@ -187,55 +187,59 @@ class TestDirectRenderer:
         assert "You are a helpful assistant" in advisor_system
         assert "get_order" in advisor_system
 
-    def test_render_for_advisor_skips_previous_ask_sonnet_calls(self, renderer):
+    def test_render_for_advisor_removes_final_ask_sonnet(self, renderer):
         """
-        CRITICAL TEST: render_for_advisor must skip previous ask_sonnet calls and responses.
+        CRITICAL TEST: render_for_advisor must remove the final ask_sonnet turn.
 
-        When Sonnet sees its own previous [Sonnet's Advice] in the message history
-        (rendered as user messages), it returns empty ~87% of the time.
+        Sonnet returns empty responses when ask_sonnet is the final turn in
+        certain conversation patterns. The fix: simply remove the final ask_sonnet
+        turn before sending to Sonnet.
 
-        The fix: skip both the ask_sonnet tool call AND the subsequent advice/error response.
+        Previous ask_sonnet calls and [Sonnet's Advice] responses are KEPT so
+        Sonnet has full context of the conversation.
         """
         # Simulate a conversation with a previous ask_sonnet call
         messages = [
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "Hi, I want to cancel my order"},
-            # First ask_sonnet call - should be SKIPPED
+            # First ask_sonnet call - KEPT in rendered messages
             {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
-            # Sonnet's advice - should be SKIPPED
+            # Sonnet's advice - KEPT in rendered messages
             {"role": "tool", "content": "[Sonnet's Advice]:\n\nFirst, authenticate the user.", "tool_call_id": "ask_sonnet_call"},
             # Policy's followup action
             {"role": "assistant", "content": '<tool_call>\n{"name": "find_user", "arguments": {"email": "test@example.com"}}\n</tool_call>'},
             {"role": "tool", "content": "user_123", "tool_call_id": "tool_call"},
             {"role": "user", "content": "My order ID is 456"},
-            # Second ask_sonnet call - the one we're rendering for
+            # Second ask_sonnet call - REMOVED (it's the final turn)
             {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
         ]
         tools = [{"function": {"name": "find_user", "description": "Find user", "parameters": {}}}]
 
         result = renderer.render_for_advisor(messages, tools, "You are helpful.")
 
-        # Verify previous ask_sonnet call and advice are NOT in the rendered messages
         all_content = " ".join(msg.get("content", "") for msg in result)
 
-        assert "[Sonnet's Advice]" not in all_content, (
-            "Previous Sonnet advice should be skipped! "
-            "Sonnet returns empty ~87% of the time when it sees its own previous advice."
+        # Previous Sonnet advice IS now kept (Sonnet needs full context)
+        assert "[Sonnet's Advice]" in all_content, (
+            "Previous Sonnet advice should be KEPT for full context."
         )
 
-        # The current ask_sonnet call (last message) should also be skipped
-        # since it's what triggered this render_for_advisor call
-        assert result[-1]["content"] != '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'
+        # The FINAL ask_sonnet call should be removed (it triggers empty responses)
+        last_msg = result[-1]
+        assert "ask_sonnet" not in last_msg.get("content", ""), (
+            "Final ask_sonnet turn should be removed to prevent empty responses."
+        )
 
-        # But the actual tool calls and results should still be present
+        # The actual tool calls and results should still be present
         assert "find_user" in all_content
         assert "user_123" in all_content
 
-    def test_render_for_advisor_skips_advisor_errors(self, renderer):
+    def test_render_for_advisor_keeps_previous_ask_sonnet_history(self, renderer):
         """
-        render_for_advisor should also skip previous Advisor Error messages.
+        render_for_advisor should keep previous ask_sonnet calls and responses.
 
-        These provide no useful context and may confuse the advisor.
+        Sonnet needs full conversation context to give good advice.
+        Only the FINAL ask_sonnet turn is removed.
         """
         messages = [
             {"role": "system", "content": "You are helpful."},
@@ -253,16 +257,88 @@ class TestDirectRenderer:
 
         all_content = " ".join(msg.get("content", "") for msg in result)
 
-        assert "[Advisor Error]" not in all_content, (
-            "Previous advisor errors should be skipped!"
+        # Previous ask_sonnet history is KEPT
+        assert "ask_sonnet" in all_content, (
+            "Previous ask_sonnet calls should be kept for context."
         )
-        assert "ask_sonnet" not in all_content, (
-            "Previous ask_sonnet calls should be skipped!"
+        assert "[Advisor Error]" in all_content, (
+            "Previous advisor errors should be kept for context."
         )
 
-        # But the conversation should still make sense
+        # The conversation should still make sense
         assert "Hello" in all_content
         assert "How can I help you?" in all_content
+
+    def test_ask_sonnet_final_turn_causes_empty_response(self, renderer):
+        """
+        Test if having ask_sonnet tool call in final turn causes Sonnet to return empty.
+
+        Hypothesis: Sonnet returns empty when it sees an ask_sonnet tool call
+        (rendered as assistant message) as the last message.
+
+        Run with: pytest -v -s test_components.py::TestDirectRenderer::test_ask_sonnet_final_turn_causes_empty_response
+        """
+        import asyncio
+        from tinker_cookbook.recipes.taubench.components import ExternalLLMClient, ExternalLLMConfig
+
+        client = ExternalLLMClient(ExternalLLMConfig(
+            model="claude-sonnet-4-5-20250929",
+            temperature=0.0,
+            max_tokens=1024,
+        ))
+
+        base_system = "You are a helpful customer service agent for a retail company."
+        tools = [
+            {"function": {"name": "find_user_id_by_name_zip", "description": "Find user ID", "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "zip": {"type": "string"}}}}},
+            {"function": {"name": "cancel_order", "description": "Cancel an order", "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}}}},
+        ]
+
+        # Build system prompt with tools
+        system_with_tools = renderer._build_system_with_tools(base_system, tools)
+
+        # Test 1: Messages WITHOUT ask_sonnet in final turn
+        messages_no_ask_sonnet = [
+            {"role": "system", "content": system_with_tools},
+            {"role": "user", "content": "Hi, I want to cancel my order. My name is John Smith and my zip is 12345."},
+        ]
+
+        # Test 2: Messages WITH ask_sonnet in final turn (as assistant)
+        messages_with_ask_sonnet = [
+            {"role": "system", "content": system_with_tools},
+            {"role": "user", "content": "Hi, I want to cancel my order. My name is John Smith and my zip is 12345."},
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "arguments": {}}\n</tool_call>'},
+        ]
+
+        async def run_tests():
+            print("\n" + "="*60)
+            print("TEST 1: No ask_sonnet in final turn")
+            print("="*60)
+            result1 = await client.call_with_usage(messages_no_ask_sonnet)
+            print(f"Response length: {len(result1.content)}")
+            print(f"Response empty: {len(result1.content.strip()) == 0}")
+            print(f"Response: {result1.content[:300]}...")
+
+            print("\n" + "="*60)
+            print("TEST 2: ask_sonnet in final turn (as assistant)")
+            print("="*60)
+            result2 = await client.call_with_usage(messages_with_ask_sonnet)
+            print(f"Response length: {len(result2.content)}")
+            print(f"Response empty: {len(result2.content.strip()) == 0}")
+            print(f"Response: {result2.content[:300]}...")
+
+            print("\n" + "="*60)
+            print("RESULT:")
+            print("="*60)
+            print(f"Without ask_sonnet: {len(result1.content)} chars, empty={len(result1.content.strip()) == 0}")
+            print(f"With ask_sonnet:    {len(result2.content)} chars, empty={len(result2.content.strip()) == 0}")
+
+            # The hypothesis: ask_sonnet in final turn causes empty
+            if len(result2.content.strip()) == 0 and len(result1.content.strip()) > 0:
+                print("\n*** CONFIRMED: ask_sonnet in final turn causes empty response! ***")
+            else:
+                print("\n*** NOT CONFIRMED: both responses similar ***")
+
+        asyncio.run(run_tests())
 
     def test_get_tau2_action_with_tool_call_tags(self, renderer):
         """Should extract action from <tool_call> tags."""
@@ -382,6 +458,35 @@ class TestConditioningRenderer:
 
         with pytest.raises(ValueError, match="requires policy followup"):
             renderer.get_tau2_action(sonnet_response, None)
+
+    def test_render_for_advisor_removes_final_ask_sonnet(self, renderer):
+        """
+        ConditioningRenderer should also remove final ask_sonnet turn.
+
+        The render_for_advisor method is inherited from AskSonnetRenderer,
+        so both DirectRenderer and ConditioningRenderer should have this behavior.
+        """
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hi, I need help"},
+            {"role": "assistant", "content": "Sure, what do you need?"},
+            {"role": "user", "content": "Cancel my order"},
+            # Final ask_sonnet call - should be removed
+            {"role": "assistant", "content": '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'},
+        ]
+        tools = [{"function": {"name": "cancel_order", "description": "Cancel order", "parameters": {}}}]
+
+        result = renderer.render_for_advisor(messages, tools, "You are helpful.")
+
+        # Final message should NOT be the ask_sonnet call
+        last_msg = result[-1]
+        assert "ask_sonnet" not in last_msg.get("content", ""), (
+            "Final ask_sonnet turn should be removed."
+        )
+
+        # Should end with the user message
+        assert last_msg["role"] == "user"
+        assert "Cancel my order" in last_msg["content"]
 
     def test_conditioning_mode_message_flow(self, renderer):
         """
@@ -811,3 +916,34 @@ class TestRaoBlackwellExploration:
         policy_epsilon._forced_on_turns.append(3)
 
         assert policy_epsilon.forced_on_turns == [1, 3]
+
+    def test_no_consecutive_ask_sonnet_forcing(self, policy_epsilon):
+        """Test that consecutive ask_sonnet forcing is prevented."""
+        policy_epsilon.start_episode(rollout_idx=0)
+        policy_epsilon._assistant_turn_count = 1
+
+        # First call should force (epsilon=1.0)
+        assert policy_epsilon._should_force() is True
+
+        # Simulate that ask_sonnet was taken
+        policy_epsilon._last_action_was_ask_sonnet = True
+        policy_epsilon._assistant_turn_count = 2
+
+        # Should NOT force on next turn (consecutive prevention)
+        assert policy_epsilon._should_force() is False
+
+        # After a non-ask_sonnet action, can force again
+        policy_epsilon._last_action_was_ask_sonnet = False
+        policy_epsilon._assistant_turn_count = 3
+        assert policy_epsilon._should_force() is True
+
+    def test_no_consecutive_ask_sonnet_rao_blackwell(self, policy_rb):
+        """Test that Rao-Blackwell also prevents consecutive ask_sonnet."""
+        # Rollout 2 should force on turn 2
+        policy_rb.start_episode(rollout_idx=2)
+        policy_rb._assistant_turn_count = 2
+        assert policy_rb._should_force() is True
+
+        # But if last action was ask_sonnet, don't force
+        policy_rb._last_action_was_ask_sonnet = True
+        assert policy_rb._should_force() is False

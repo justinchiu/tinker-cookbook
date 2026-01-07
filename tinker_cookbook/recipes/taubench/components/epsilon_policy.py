@@ -162,6 +162,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     _assistant_turn_count: int = field(default=0, init=False)
     _current_rollout_idx: int = field(default=0, init=False)
     _forced_on_turns: list[int] = field(default_factory=list, init=False)  # Which turns were forced this episode
+    _last_action_was_ask_sonnet: bool = field(default=False, init=False)  # Prevent consecutive ask_sonnet
     _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
 
     def __post_init__(self):
@@ -210,6 +211,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         self._assistant_turn_count = 0
         self._current_rollout_idx = rollout_idx
         self._forced_on_turns = []
+        self._last_action_was_ask_sonnet = False
 
     def end_episode(self):
         """Call at the end of each episode to update metrics."""
@@ -240,6 +242,10 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     def _should_force(self) -> bool:
         """Determine if we should force ask_sonnet based on exploration mode."""
         is_first_turn = self._assistant_turn_count == 0
+
+        # Never force consecutive ask_sonnet calls
+        if self._last_action_was_ask_sonnet:
+            return False
 
         if self.mode == ExplorationMode.EPSILON_GREEDY:
             # Random forcing with probability epsilon (never on first turn)
@@ -309,6 +315,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
 
             self._forced_on_turns.append(forced_turn)
             self._assistant_turn_count += 1
+            self._last_action_was_ask_sonnet = True
             self._metrics.record_forced_ask_sonnet()
 
             return TokensWithLogprobs(
@@ -323,8 +330,11 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         result = await base_policy(model_input, stop)
         self._assistant_turn_count += 1
 
-        # Track what the policy chose
-        if self._is_ask_sonnet_action(result.tokens):
+        # Track what the policy chose and update consecutive ask_sonnet flag
+        is_ask_sonnet = self._is_ask_sonnet_action(result.tokens)
+        self._last_action_was_ask_sonnet = is_ask_sonnet
+
+        if is_ask_sonnet:
             self._metrics.record_policy_ask_sonnet()
             if self._assistant_turn_count == 1:
                 logger.warning("Policy called ask_sonnet on first turn (greeting)")
