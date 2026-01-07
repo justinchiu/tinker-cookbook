@@ -83,6 +83,7 @@ class Tau2Env(Env):
         # Track ask_sonnet calls for reward computation
         self.ask_sonnet_call_count: int = 0
         self._last_action_was_ask_sonnet: bool = False  # Track consecutive ask_sonnet calls
+        self.empty_advisor_responses: int = 0  # Track empty responses from advisor
 
         # Token cost tracking
         self.sonnet_input_tokens: int = 0
@@ -265,6 +266,7 @@ class Tau2Env(Env):
 
             # Handle empty advisor response
             if not sonnet_response or not sonnet_response.strip():
+                self.empty_advisor_responses += 1
                 logger.warning("Advisor returned empty response, providing error feedback to policy")
                 # Return an error observation so the policy can continue
                 error_msg = "[Advisor Error]: The advisor returned an empty response. Please proceed without advisor help."
@@ -444,6 +446,7 @@ class Tau2Env(Env):
 
         metadata = {
             "ask_sonnet_count": self.ask_sonnet_call_count,
+            "empty_advisor_responses": self.empty_advisor_responses,
             "context_exceeded": self._context_exceeded,
             **self.get_token_costs(),
         }
@@ -553,6 +556,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
             metrics = {
                 "ask_sonnet_count": ask_sonnet_count,
                 "ask_sonnet_penalty": ask_sonnet_penalty,
+                "empty_advisor_responses": tau2_env.empty_advisor_responses,
                 # Token costs
                 "sonnet_input_tokens": tau2_env.sonnet_input_tokens,
                 "sonnet_output_tokens": tau2_env.sonnet_output_tokens,
