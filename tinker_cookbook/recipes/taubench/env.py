@@ -225,6 +225,13 @@ class Tau2Env(Env):
                     "Consecutive ask_sonnet calls detected for task %s - terminating episode",
                     self.task_id,
                 )
+                # Add the second ask_sonnet call to messages so it's visible in logged trajectory
+                self.messages.add_ask_sonnet_call(parsed.original_message)
+                self.messages.add_tool_result(
+                    "[Error]: Consecutive ask_sonnet calls are not allowed. "
+                    "You must act on the advisor's advice before asking again.",
+                    tool_call_id="ask_sonnet_call",
+                )
                 self._log_episode(reward=0.0)
                 current_obs = self.renderer.build_generation_prompt(
                     self.messages.messages, tools=self.tools
