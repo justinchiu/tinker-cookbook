@@ -10,6 +10,12 @@ class AskSonnetMode(Enum):
     CONDITIONING = "conditioning"    # Sonnet's response is advice; policy decides what to do
 
 
+class ExplorationMode(Enum):
+    """Mode for ask_sonnet exploration during RL training."""
+    EPSILON_GREEDY = "epsilon"       # Random forcing with probability epsilon
+    RAO_BLACKWELL = "rao_blackwell"  # Force on assistant turn == rollout_idx (structured exploration)
+
+
 class ActionType(Enum):
     """Type of action parsed from model output."""
     TOOL_CALL = "tool_call"          # Regular tool call

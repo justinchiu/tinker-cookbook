@@ -13,6 +13,8 @@ import tinker
 from tinker_cookbook.completers import TokenCompleter, TokensWithLogprobs, StopCondition, TinkerTokenCompleter
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
+from tinker_cookbook.recipes.taubench.components.types import ExplorationMode
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,6 +148,9 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     # Random seed
     seed: int = 42
 
+    # Exploration mode
+    mode: ExplorationMode = ExplorationMode.EPSILON_GREEDY
+
     # Sampling client - set this before each rollout batch
     sampling_client: tinker.SamplingClient = field(default=None, repr=False)
 
@@ -154,7 +159,8 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     _tokenizer: object = field(default=None, init=False, repr=False)
     _ask_sonnet_tokens: list[int] = field(default=None, init=False, repr=False)
     _current_step: int = field(default=0, init=False)
-    _turn_in_episode: int = field(default=0, init=False)
+    _assistant_turn_count: int = field(default=0, init=False)
+    _current_rollout_idx: int = field(default=0, init=False)
     _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
 
     def __post_init__(self):
@@ -167,9 +173,9 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         self._ask_sonnet_tokens = self._tokenizer.encode(ask_sonnet_str, add_special_tokens=False)
 
         logger.info(
-            "EpsilonAskSonnetPolicy initialized: initial_epsilon=%.3f, final_epsilon=%.3f, "
+            "EpsilonAskSonnetPolicy initialized: mode=%s, initial_epsilon=%.3f, final_epsilon=%.3f, "
             "decay_type=%s, decay_steps=%d",
-            self.initial_epsilon, self.final_epsilon, self.decay_type, self.decay_steps
+            self.mode.value, self.initial_epsilon, self.final_epsilon, self.decay_type, self.decay_steps
         )
         logger.debug("ask_sonnet tokens (%d): %s", len(self._ask_sonnet_tokens), self._ask_sonnet_tokens)
 
@@ -198,9 +204,10 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         """Get metrics tracker."""
         return self._metrics
 
-    def start_episode(self):
+    def start_episode(self, rollout_idx: int = 0):
         """Call at the start of each episode to reset turn counter."""
-        self._turn_in_episode = 0
+        self._assistant_turn_count = 0
+        self._current_rollout_idx = rollout_idx
 
     def end_episode(self):
         """Call at the end of each episode to update metrics."""
@@ -217,6 +224,23 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
             return "ask_sonnet" in text and "<tool_call>" in text
         except Exception:
             return False
+
+    def _should_force(self) -> bool:
+        """Determine if we should force ask_sonnet based on exploration mode."""
+        is_first_turn = self._assistant_turn_count == 0
+
+        if self.mode == ExplorationMode.EPSILON_GREEDY:
+            # Random forcing with probability epsilon (never on first turn)
+            return not is_first_turn and self._rng.random() < self.current_epsilon
+
+        elif self.mode == ExplorationMode.RAO_BLACKWELL:
+            # Deterministic: force on assistant turn == rollout_idx
+            # Rollout 0 is baseline (no forcing), rollouts 1-11 force on turn 1-11
+            if self._current_rollout_idx == 0:
+                return False  # Baseline rollout - never force
+            return self._assistant_turn_count == self._current_rollout_idx
+
+        return False
 
     async def _get_logprobs_for_forced_action(
         self, observation: tinker.ModelInput
@@ -247,46 +271,30 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         self, model_input: tinker.ModelInput, stop: StopCondition
     ) -> TokensWithLogprobs:
         """
-        Sample action, with epsilon probability of forcing ask_sonnet.
+        Sample action, potentially forcing ask_sonnet based on exploration mode.
 
-        First turn (greeting) is always sampled from the model.
+        - EPSILON_GREEDY: Random forcing with probability epsilon (never on first turn)
+        - RAO_BLACKWELL: Force on assistant turn == rollout_idx (rollout 0 is baseline)
+
         When forcing ask_sonnet, we compute the model's actual logprobs
         for those tokens to ensure correct importance ratios in training.
         """
         if self.sampling_client is None:
             raise ValueError("sampling_client must be set before calling epsilon policy")
 
-        epsilon = self.current_epsilon
-        is_first_turn = self._turn_in_episode == 0
+        # Check if we should force ask_sonnet based on exploration mode
+        should_force = self._should_force()
 
-        # First turn exception: always use base policy for greeting
-        if is_first_turn:
-            base_policy = TinkerTokenCompleter(
-                self.sampling_client, self.max_tokens, self.temperature
-            )
-            result = await base_policy(model_input, stop)
-            self._turn_in_episode += 1
-
-            # Track what the policy did
-            if self._is_ask_sonnet_action(result.tokens):
-                self._metrics.record_policy_ask_sonnet()
-                logger.warning("Policy called ask_sonnet on first turn (greeting)")
-            else:
-                self._metrics.record_policy_other()
-
-            return result
-
-        # Epsilon-greedy: with probability epsilon, force ask_sonnet
-        if self._rng.random() < epsilon:
+        if should_force:
             logger.debug(
-                "Forcing ask_sonnet (epsilon=%.3f, turn=%d, step=%d)",
-                epsilon, self._turn_in_episode, self._current_step
+                "Forcing ask_sonnet (mode=%s, turn=%d, rollout=%d, step=%d)",
+                self.mode.value, self._assistant_turn_count, self._current_rollout_idx, self._current_step
             )
 
             # Get real logprobs from the model for correct importance ratios
             logprobs = await self._get_logprobs_for_forced_action(model_input)
 
-            self._turn_in_episode += 1
+            self._assistant_turn_count += 1
             self._metrics.record_forced_ask_sonnet()
 
             return TokensWithLogprobs(
@@ -294,24 +302,27 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
                 maybe_logprobs=logprobs,
             )
 
-        # Otherwise, sample from the model
+        # Sample from the model
         base_policy = TinkerTokenCompleter(
             self.sampling_client, self.max_tokens, self.temperature
         )
         result = await base_policy(model_input, stop)
-        self._turn_in_episode += 1
+        self._assistant_turn_count += 1
 
         # Track what the policy chose
         if self._is_ask_sonnet_action(result.tokens):
             self._metrics.record_policy_ask_sonnet()
+            if self._assistant_turn_count == 1:
+                logger.warning("Policy called ask_sonnet on first turn (greeting)")
         else:
             self._metrics.record_policy_other()
 
         return result
 
-    def get_metrics_and_reset(self) -> dict[str, float]:
-        """Get current metrics including epsilon value."""
+    def get_metrics_and_reset(self) -> dict[str, float | str]:
+        """Get current metrics including epsilon value and mode."""
         metrics = self._metrics.get_metrics()
         metrics["epsilon_policy/current_epsilon"] = self.current_epsilon
         metrics["epsilon_policy/current_step"] = self._current_step
+        metrics["epsilon_policy/mode"] = self.mode.value
         return metrics

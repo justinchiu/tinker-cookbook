@@ -25,13 +25,14 @@ class Tau2GymWrapper:
     - Tool extraction
     """
 
-    def __init__(self, domain: str, task_id: str):
+    def __init__(self, domain: str, task_id: str, user_llm: str | None = None):
         """
         Initialize the tau2 gym wrapper.
 
         Args:
             domain: Tau2 domain (e.g., "retail", "airline", "telecom")
             task_id: Task ID within the domain
+            user_llm: LLM model for user simulation (default: gpt-4.1)
         """
         self.domain = domain
         self.task_id = task_id
@@ -40,6 +41,7 @@ class Tau2GymWrapper:
         self.env = AgentGymEnv(
             domain=domain,
             task_id=task_id,
+            user_llm=user_llm,
         )
 
     def get_initial_observation(self) -> str:

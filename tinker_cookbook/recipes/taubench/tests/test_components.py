@@ -16,6 +16,8 @@ from tinker_cookbook.recipes.taubench.components import (
     AskSonnetRenderer,
     ConditioningRenderer,
     DirectRenderer,
+    EpsilonAskSonnetPolicy,
+    ExplorationMode,
     ExternalLLMClient,
     ExternalLLMConfig,
     MessageManager,
@@ -682,3 +684,97 @@ class TestObservationType:
         assert ObservationType.USER_MESSAGE.value == "user"
         assert ObservationType.TOOL_RESULT.value == "tool"
         assert ObservationType.OTHER.value == "other"
+
+
+class TestExplorationMode:
+    """Tests for ExplorationMode enum."""
+
+    def test_epsilon_greedy_value(self):
+        assert ExplorationMode.EPSILON_GREEDY.value == "epsilon"
+
+    def test_rao_blackwell_value(self):
+        assert ExplorationMode.RAO_BLACKWELL.value == "rao_blackwell"
+
+
+class TestRaoBlackwellExploration:
+    """Tests for Rao-Blackwell exploration mode in EpsilonAskSonnetPolicy."""
+
+    @pytest.fixture
+    def policy_rb(self):
+        """Create a policy with Rao-Blackwell mode."""
+        return EpsilonAskSonnetPolicy(
+            model_name="Qwen/Qwen3-30B-A3B-Instruct-2507",
+            max_tokens=1024,
+            mode=ExplorationMode.RAO_BLACKWELL,
+        )
+
+    @pytest.fixture
+    def policy_epsilon(self):
+        """Create a policy with epsilon-greedy mode."""
+        return EpsilonAskSonnetPolicy(
+            model_name="Qwen/Qwen3-30B-A3B-Instruct-2507",
+            max_tokens=1024,
+            mode=ExplorationMode.EPSILON_GREEDY,
+            initial_epsilon=1.0,  # Always force for testing
+        )
+
+    def test_policy_mode_initialization(self, policy_rb, policy_epsilon):
+        """Test that policies are initialized with correct mode."""
+        assert policy_rb.mode == ExplorationMode.RAO_BLACKWELL
+        assert policy_epsilon.mode == ExplorationMode.EPSILON_GREEDY
+
+    def test_start_episode_sets_rollout_idx(self, policy_rb):
+        """Test that start_episode sets the rollout index."""
+        policy_rb.start_episode(rollout_idx=5)
+        assert policy_rb._current_rollout_idx == 5
+        assert policy_rb._assistant_turn_count == 0
+
+    def test_rb_rollout_0_never_forces(self, policy_rb):
+        """Test that rollout 0 (baseline) never forces ask_sonnet."""
+        policy_rb.start_episode(rollout_idx=0)
+        for turn in range(10):
+            policy_rb._assistant_turn_count = turn
+            assert policy_rb._should_force() is False, f"Rollout 0 should never force (turn {turn})"
+
+    def test_rb_rollout_n_forces_on_turn_n(self, policy_rb):
+        """Test that rollout N forces ask_sonnet on turn N only."""
+        for rollout_idx in range(1, 12):
+            policy_rb.start_episode(rollout_idx=rollout_idx)
+            for turn in range(12):
+                policy_rb._assistant_turn_count = turn
+                expected = (turn == rollout_idx)
+                actual = policy_rb._should_force()
+                assert actual == expected, (
+                    f"Rollout {rollout_idx}, turn {turn}: "
+                    f"expected should_force={expected}, got {actual}"
+                )
+
+    def test_rb_first_turn_never_forces(self, policy_rb):
+        """Test that first turn (greeting) is never forced even for rollout 1+."""
+        # Rollout 1 should force on turn 1, not turn 0
+        policy_rb.start_episode(rollout_idx=1)
+        policy_rb._assistant_turn_count = 0
+        assert policy_rb._should_force() is False
+
+        policy_rb._assistant_turn_count = 1
+        assert policy_rb._should_force() is True
+
+    def test_epsilon_first_turn_never_forces(self, policy_epsilon):
+        """Test that epsilon-greedy never forces on first turn."""
+        policy_epsilon.start_episode(rollout_idx=0)
+        policy_epsilon._assistant_turn_count = 0
+        # Even with epsilon=1.0, first turn should not force
+        assert policy_epsilon._should_force() is False
+
+    def test_epsilon_subsequent_turns_can_force(self, policy_epsilon):
+        """Test that epsilon-greedy can force on subsequent turns."""
+        policy_epsilon.start_episode(rollout_idx=0)
+        policy_epsilon._assistant_turn_count = 1
+        # With epsilon=1.0, should always force on non-first turns
+        assert policy_epsilon._should_force() is True
+
+    def test_metrics_include_mode(self, policy_rb):
+        """Test that metrics include exploration mode."""
+        metrics = policy_rb.get_metrics_and_reset()
+        assert "epsilon_policy/mode" in metrics
+        assert metrics["epsilon_policy/mode"] == "rao_blackwell"

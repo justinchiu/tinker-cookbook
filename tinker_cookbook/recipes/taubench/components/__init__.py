@@ -2,6 +2,7 @@
 
 from tinker_cookbook.recipes.taubench.components.types import (
     AskSonnetMode,
+    ExplorationMode,
     ActionType,
     ObservationType,
     ParsedAction,
@@ -58,6 +59,7 @@ NOTE: Always greet the customer yourself on the first turn. Do not use `ask_sonn
 __all__ = [
     # Types
     "AskSonnetMode",
+    "ExplorationMode",
     "ActionType",
     "ObservationType",
     "ParsedAction",

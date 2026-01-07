@@ -13,12 +13,15 @@ from tinker_cookbook.utils import logtree
 
 
 @logtree.scope_header_decorator
-async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
+async def do_single_rollout(
+    policy: TokenCompleter, env: Env, rollout_idx: int = 0
+) -> Trajectory:
     transitions = []
 
-    # Call start_episode if policy supports it (e.g., EpsilonAskSonnetPolicy)
+    # Call start_episode if policy supports it (e.g., AskSonnetExplorationPolicy)
+    # Pass rollout_idx for Rao-Blackwell exploration mode
     if hasattr(policy, "start_episode"):
-        policy.start_episode()
+        policy.start_episode(rollout_idx=rollout_idx)
 
     ob, stop_condition = await env.initial_observation()
     while True:
@@ -49,7 +52,10 @@ async def do_group_rollout(
     env_group_builder: EnvGroupBuilder, policy: TokenCompleter
 ) -> TrajectoryGroup:
     envs_G: Sequence[Env] = await env_group_builder.make_envs()
-    trajectories_G = await asyncio.gather(*[do_single_rollout(policy, env) for env in envs_G])
+    trajectories_G = await asyncio.gather(*[
+        do_single_rollout(policy, env, rollout_idx=i)
+        for i, env in enumerate(envs_G)
+    ])
     rewards_and_metrics_G = await env_group_builder.compute_group_rewards(trajectories_G, envs_G)
     rewards_G, metrics_G = zip(*rewards_and_metrics_G, strict=True)
 

@@ -67,6 +67,8 @@ class Tau2Env(Env):
         external_llm_max_tokens: int = 1024,
         # Ask sonnet mode
         ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
+        # User simulator LLM
+        user_llm: str | None = None,
         # Logging
         rollout_logger: RolloutLogger | None = None,
     ):
@@ -95,7 +97,7 @@ class Tau2Env(Env):
         self.ask_sonnet_mode = ask_sonnet_mode
 
         # Initialize tau2 gym wrapper
-        self.gym = Tau2GymWrapper(domain, task_id)
+        self.gym = Tau2GymWrapper(domain, task_id, user_llm=user_llm)
         logger.debug(
             "Tau2Env initialized for task %s with max_context_length=%s",
             task_id,
@@ -464,6 +466,8 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+    # User simulator LLM (default: gpt-4.1, use gpt-4o-mini for cheaper/faster)
+    user_llm: str | None = None
     # Penalty per ask_sonnet call
     ask_sonnet_penalty: float = 0.0
     # Optional token/cost penalties (applied to final reward)
@@ -482,15 +486,16 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
                 *[
                     asyncio.to_thread(
                         Tau2Env,
-                        self.renderer,
-                        env_domain,
-                        self.task_id,
-                        self.max_context_length,
-                        self.external_llm_model,
-                        self.external_llm_temperature,
-                        self.external_llm_max_tokens,
-                        self.ask_sonnet_mode,
-                        self.rollout_logger,
+                        renderer=self.renderer,
+                        domain=env_domain,
+                        task_id=self.task_id,
+                        max_context_length=self.max_context_length,
+                        external_llm_model=self.external_llm_model,
+                        external_llm_temperature=self.external_llm_temperature,
+                        external_llm_max_tokens=self.external_llm_max_tokens,
+                        ask_sonnet_mode=self.ask_sonnet_mode,
+                        user_llm=self.user_llm,
+                        rollout_logger=self.rollout_logger,
                     )
                     for _ in range(self.num_envs)
                 ]
@@ -559,6 +564,8 @@ class Tau2Dataset(RLDataset):
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+    # User simulator LLM (default: gpt-4.1, use gpt-4o-mini for cheaper/faster)
+    user_llm: str | None = None
     ask_sonnet_penalty: float = 0.0
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
@@ -587,6 +594,7 @@ class Tau2Dataset(RLDataset):
                 external_llm_temperature=self.external_llm_temperature,
                 external_llm_max_tokens=self.external_llm_max_tokens,
                 ask_sonnet_mode=self.ask_sonnet_mode,
+                user_llm=self.user_llm,
                 ask_sonnet_penalty=self.ask_sonnet_penalty,
                 sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
                 tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
@@ -619,6 +627,8 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     external_llm_temperature: float = 0.0
     external_llm_max_tokens: int = 1024
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
+    # User simulator LLM (can use gpt-4o-mini for cheaper/faster)
+    user_llm: str = "gpt-4.1"
     ask_sonnet_penalty: float = 0.0
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
@@ -652,6 +662,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
             ask_sonnet_mode=self.ask_sonnet_mode,
+            user_llm=self.user_llm,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
             sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
             tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,
@@ -670,6 +681,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             external_llm_temperature=self.external_llm_temperature,
             external_llm_max_tokens=self.external_llm_max_tokens,
             ask_sonnet_mode=self.ask_sonnet_mode,
+            user_llm=self.user_llm,
             ask_sonnet_penalty=self.ask_sonnet_penalty,
             sonnet_token_penalty_per_1k=self.sonnet_token_penalty_per_1k,
             tau2_user_token_penalty_per_1k=self.tau2_user_token_penalty_per_1k,

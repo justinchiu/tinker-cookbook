@@ -17,7 +17,7 @@ import chz
 import tinker
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.completers import TokenCompleter
-from tinker_cookbook.recipes.taubench.components import AskSonnetMode, EpsilonAskSonnetPolicy, RolloutLogger
+from tinker_cookbook.recipes.taubench.components import AskSonnetMode, ExplorationMode, EpsilonAskSonnetPolicy, RolloutLogger
 from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder
 from tinker_cookbook.rl import train
 
@@ -49,6 +49,8 @@ class CLIConfig:
     external_llm_max_tokens: int = 1024
     ask_sonnet_penalty: float = 0.0  # Penalty per ask_sonnet call
     ask_sonnet_mode: AskSonnetMode = AskSonnetMode.CONDITIONING  # How ask_sonnet works
+    # User simulator LLM (default: gpt-4.1, can use gpt-4o-mini for cheaper/faster)
+    user_llm: str = "gpt-4.1"
     # Optional token/cost penalties (applied to final reward)
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
@@ -60,6 +62,7 @@ class CLIConfig:
     epsilon_decay_steps: int = 100  # Steps over which to decay epsilon
     epsilon_decay_type: str = "linear"  # "linear" or "exponential"
     epsilon_seed: int = 42  # Random seed for epsilon exploration
+    exploration_mode: ExplorationMode = ExplorationMode.EPSILON_GREEDY  # "epsilon" or "rao_blackwell"
 
 
 def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetPolicy | None]:
@@ -115,6 +118,7 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
         external_llm_temperature=cli_config.external_llm_temperature,
         external_llm_max_tokens=cli_config.external_llm_max_tokens,
         ask_sonnet_mode=cli_config.ask_sonnet_mode,
+        user_llm=cli_config.user_llm,
         ask_sonnet_penalty=cli_config.ask_sonnet_penalty,
         sonnet_token_penalty_per_1k=cli_config.sonnet_token_penalty_per_1k,
         tau2_user_token_penalty_per_1k=cli_config.tau2_user_token_penalty_per_1k,
@@ -138,6 +142,7 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
             decay_steps=cli_config.epsilon_decay_steps,
             decay_type=cli_config.epsilon_decay_type,
             seed=cli_config.epsilon_seed,
+            mode=cli_config.exploration_mode,
         )
 
         def policy_factory(sampling_client: tinker.SamplingClient) -> TokenCompleter:
@@ -159,8 +164,9 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
                 )
 
         logger.info(
-            f"Epsilon-greedy ask_sonnet enabled: initial_epsilon={cli_config.initial_epsilon}, "
-            f"final_epsilon={cli_config.final_epsilon}, decay_steps={cli_config.epsilon_decay_steps}"
+            f"Epsilon ask_sonnet enabled: mode={cli_config.exploration_mode.value}, "
+            f"initial_epsilon={cli_config.initial_epsilon}, final_epsilon={cli_config.final_epsilon}, "
+            f"decay_steps={cli_config.epsilon_decay_steps}"
         )
 
     config = train.Config(
