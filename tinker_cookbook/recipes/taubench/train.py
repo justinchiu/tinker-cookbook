@@ -89,13 +89,13 @@ def build_config(cli_config: CLIConfig) -> tuple[train.Config, EpsilonAskSonnetP
         wandb_name = run_name
 
     # Create rollout loggers for conversation logging
-    # Training: sample 3 successes + 3 failures per iteration
+    # Training: log ALL rollouts (0 = no limit)
     train_rollout_logger = RolloutLogger(
         log_dir=log_path,
         enabled=True,
         subdir="rollouts",
-        max_success_per_iter=3,
-        max_failure_per_iter=3,
+        max_success_per_iter=0,  # 0 = no limit, log all
+        max_failure_per_iter=0,  # 0 = no limit, log all
     )
     # Evaluation: log ALL rollouts
     eval_rollout_logger = RolloutLogger(
