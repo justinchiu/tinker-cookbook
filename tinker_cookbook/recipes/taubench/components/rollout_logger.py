@@ -1,5 +1,6 @@
 """RolloutLogger - Logs full conversation histories from tau2 rollouts."""
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -89,7 +90,9 @@ class RolloutLogger:
         self._episode_count += 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         status = "success" if is_success else "failure"
-        filename = f"iter{self._current_iter:04d}_{status}_{domain}_{task_id}_{timestamp}.json"
+        # Use short hash of task_id in filename (full task_id is saved in JSON content)
+        task_hash = hashlib.md5(task_id.encode()).hexdigest()[:8]
+        filename = f"iter{self._current_iter:04d}_{status}_{domain}_{task_hash}_{timestamp}.json"
 
         # Ensure directory exists (safety check)
         if not hasattr(self, 'rollout_path'):
