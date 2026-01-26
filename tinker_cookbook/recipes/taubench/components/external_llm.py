@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 def is_retryable_error(exception: BaseException) -> bool:
-    """Check if an exception is retryable (rate limit, server error, gateway error, or credit balance)."""
-    if isinstance(exception, (litellm.InternalServerError, litellm.RateLimitError, litellm.BadGatewayError)):
+    """Check if an exception is retryable (connection error, rate limit, server error, gateway error, or credit balance)."""
+    if isinstance(exception, (litellm.APIConnectionError, litellm.InternalServerError, litellm.RateLimitError, litellm.BadGatewayError, litellm.Timeout)):
         return True
     # Check for credit balance errors in the exception message
     error_str = str(exception).lower()
