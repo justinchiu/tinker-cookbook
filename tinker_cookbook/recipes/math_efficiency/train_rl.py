@@ -70,7 +70,7 @@ class CLIConfig:
     base_lr: float = 1e-6  # Base LR at batch_size=1024
 
     # Sampling parameters
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     temperature: float = 1.0
 
     # No KL penalty for hard problems (per compute-optimal scaling)

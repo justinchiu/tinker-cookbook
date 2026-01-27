@@ -158,7 +158,7 @@ async def generate_efficient_data(
     model_name: str,
     num_problems: int = 100,
     num_samples: int = 16,
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
     temperature: float = 1.0,
     output_path: str = "/tmp/gsm8k_efficient.jsonl",
     base_url: str | None = None,
@@ -261,7 +261,7 @@ class CLIConfig:
     checkpoint_path: str | None = None
     num_problems: int = 10
     num_samples: int = 16
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     temperature: float = 1.0
     output_path: str = "/tmp/gsm8k_efficient.jsonl"
     base_url: str | None = None

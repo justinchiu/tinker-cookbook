@@ -258,7 +258,7 @@ async def run_evaluation(
     checkpoint_path: str | None = None,
     num_problems: int = 100,
     samples_per_problem: int = 4,
-    max_tokens: int = 2048,
+    max_tokens: int = 4096,
     temperature: float = 1.0,
     base_url: str | None = None,
     renderer_name: str | None = None,
@@ -407,7 +407,7 @@ class CLIConfig:
     checkpoint_path: str | None = None
     num_problems: int = 10
     samples_per_problem: int = 4
-    max_tokens: int = 2048
+    max_tokens: int = 4096
     temperature: float = 1.0
     base_url: str | None = None
     renderer_name: str | None = None
