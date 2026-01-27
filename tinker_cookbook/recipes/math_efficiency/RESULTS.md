@@ -2,6 +2,12 @@
 
 Training Qwen3-8B to solve GSM-8K problems with fewer reasoning tokens while maintaining accuracy.
 
+## Experiment Settings
+- **max_tokens**: 4096
+- **Timeout handling**: Timeouts count as 0% pass rate (not excluded)
+- **Dataset**: 100 fixed problems from GSM-8K train set
+- **Samples per problem**: 4 (evaluation)
+
 ## Wandb Project
 https://wandb.ai/percepta-ai/math-efficiency-interview
 
@@ -9,118 +15,85 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 
 | Model | Accuracy | Mean Tokens | Thinking Tokens | Efficiency | Wandb |
 |-------|----------|-------------|-----------------|------------|-------|
-| Baseline | 76.5% | 1555 | 885 | 0.05 | [baseline-eval-100](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/o33z0050) |
-| SFT | 85.0% | 1371 | 842 | 0.06 | [sft-eval](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/ufn4hevx) |
-| RL (short) | **88.6%** | **1381** | 915 | **0.06** | [rl-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/r5aqsevm) |
-| RL (long) | 76.0% | 1551 | 873 | 0.05 | [rl-train-long](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/7i6bvi3r) |
+| Baseline | 91.0% | 1805 | 1308 | 0.05 | [baseline-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/0zx66j80) |
+| SFT | 83.0% | 1278 | 850 | 0.06 | [sft-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/hwkgnpo1) |
+| RL (1 epoch) | 59.0% | 1302 | 622 | 0.05 | [rl-train-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/khmkki1q) |
 
-## Baseline Evaluation (100 problems)
+## Baseline Evaluation
 
-**Run:** [baseline-eval-100](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/o33z0050)
+**Run:** [baseline-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/0zx66j80)
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 76.5% |
-| Mean Tokens | 1555 |
-| Median Tokens | 1634 |
-| P90 Tokens | 2048 |
-| Mean Thinking Tokens | 885 (57% of total) |
+| Accuracy | 91.0% |
+| Mean Tokens | 1805 |
+| Median Tokens | 1581 |
+| P90 Tokens | 3291 |
+| Mean Thinking Tokens | 1308 (72% of total) |
 | Efficiency Score | 0.05 |
+| Timeouts | 4/100 problems |
 
 ## Method 1: Rejection-Sampled SFT
 
 ### Data Generation
 - 100 problems, 16 samples each
-- 94/100 problems had at least one correct answer
-- Mean tokens in training data: **1088** (30% reduction from baseline)
+- 98/100 problems had at least one correct answer
+- Mean tokens in training data: **1191** (34% reduction from baseline)
 
 ### Training
-- **Run:** [sft-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/apvhxmwf)
+- **Run:** [sft-train-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/15u6i9j1)
 - Learning rate: 5e-5
 - LoRA rank: 128
 - Epochs: 2
 - Batch size: 8
 
 ### Evaluation
-- **Run:** [sft-eval](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/ufn4hevx)
+- **Run:** [sft-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/hwkgnpo1)
 
 | Metric | Baseline | SFT | Change |
 |--------|----------|-----|--------|
-| Accuracy | 76.5% | 85.0% | **+8.5%** |
-| Mean Tokens | 1555 | 1371 | **-12%** |
-| Thinking Tokens | 885 | 842 | **-5%** |
+| Accuracy | 91.0% | 83.0% | -8% |
+| Mean Tokens | 1805 | 1278 | **-29%** |
+| Thinking Tokens | 1308 | 850 | **-35%** |
 | Efficiency | 0.05 | 0.06 | **+20%** |
+| Timeouts | 4 | 16 | +12 |
 
 ### Observations
-- SFT improved accuracy by 8.5% while reducing token count by 12%
-- The efficiency score improved by 20%
-- Model learned from the shortest correct examples in the training data
+- SFT reduced token count by 29% and thinking tokens by 35%
+- Accuracy dropped 8% (91% → 83%)
+- Efficiency improved by 20%
+- More timeouts than baseline (16 vs 4) - model may be generating longer on hard problems
 
 ## Method 2: Online RL with Efficiency Reward
 
-### Training (Short Run)
-- **Run:** [rl-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/r5aqsevm)
-- 10 problems, 1 epoch (4 batches)
+### Training
+- **Run:** [rl-train-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/khmkki1q)
+- 100 problems, 1 epoch (4 batches)
 - Group size: 8, Groups per batch: 32
 - LoRA rank: 128
 - Learning rate: 5e-7 (scaled from base 1e-6)
 
-### Evaluation (Short Run)
-- 68/100 problems evaluated (some timeouts)
-
-| Metric | Baseline | SFT | RL (short) | Change (vs Baseline) |
-|--------|----------|-----|-----|--------|
-| Accuracy | 76.5% | 85.0% | 88.6% | **+12.1%** |
-| Mean Tokens | 1555 | 1371 | 1381 | **-11%** |
-| Thinking Tokens | 885 | 842 | 915 | +3% |
-| Efficiency | 0.05 | 0.06 | 0.06 | **+20%** |
-
-### Training (Long Run - 4 Epochs)
-- **Run:** [rl-train-long](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/7i6bvi3r)
-- 100 problems, 4 epochs (16 batches total)
-- Best tokens decreased from 1246 → 934 during training (25% reduction)
-- Final average best tokens: 1045
-
-### Evaluation (Long Run)
-| Metric | Baseline | RL (long) | Change |
-|--------|----------|-----------|--------|
-| Accuracy | 76.5% | 76.0% | -0.5% |
-| Mean Tokens | 1555 | 1551 | -0.3% |
-| Thinking Tokens | 885 | 873 | -1.4% |
+### Evaluation
+| Metric | Baseline | RL | Change |
+|--------|----------|-----|--------|
+| Accuracy | 91.0% | 59.0% | **-32%** |
+| Mean Tokens | 1805 | 1302 | -28% |
+| Thinking Tokens | 1308 | 622 | **-52%** |
 | Efficiency | 0.05 | 0.05 | 0% |
-
-### Corrected Comparison (Apples-to-Apples)
-The short RL run only evaluated **68/100 problems** due to timeouts (the harder 32 timed out).
-When comparing on the **same 68 problems**:
-
-| Problems | Short RL | Long RL |
-|----------|----------|---------|
-| Same 68 problems | 88.6% | 85.3% |
-| 32 harder problems (timed out in short) | N/A | 56.2% |
-
-The apparent 12.6% gap (88.6% vs 76.0%) was misleading - the real gap is only **3.3%** on the same problems.
+| Timeouts | 4 | 37 | +33 |
 
 ### Observations
-- **Short RL run** reported 88.6% accuracy, but this excluded 32 harder problems that timed out
-- **Long RL run** evaluated all 100 problems including the harder ones
-- On the same 68 problems, both runs performed similarly (88.6% vs 85.3%)
-- Training showed clear learning (best_tokens 1246→934, 25% reduction during training)
-- The self-improving efficiency reward (`best_so_far / num_tokens`) effectively reduced token counts
-- Key insight: Eval timeouts can bias results - always compare on the same problem set
-- **Fix applied**: `eval.py` now counts timeouts and extraction failures as 0% pass rate instead of excluding them
+- RL training was too short (only 4 batches) to be effective
+- Many timeouts (37/100) suggest model instability
+- Thinking tokens reduced significantly (-52%) but at cost of accuracy
+- Would benefit from longer training with more careful hyperparameter tuning
 
-## Goals vs Results
-| Goal | Target | SFT | RL (short) | RL (long) |
-|------|--------|-----|------------|-----------|
-| Maintain accuracy | >80% of baseline (>61%) | 85% ✓ | 88.6% ✓ | 76% ✓ |
-| Reduce tokens | <70% of baseline (<1089) | 1371 (88%) | 1381 (89%) | 1551 (100%) |
-| Maximize efficiency | Higher than baseline | 0.06 (+20%) | 0.06 (+20%) | 0.05 (0%) |
+## Key Findings
 
-**Key Findings:**
-- SFT and short RL both exceeded accuracy goals and improved efficiency
-- Short RL (1 epoch) achieved the best accuracy (88.6%)
-- Long RL (4 epochs) showed overfitting - training metrics improved but eval didn't
-- Neither method hit the aggressive 30% token reduction target
+1. **SFT is the most reliable method** for efficiency training with limited compute
+2. **Token reduction achieved**: SFT reduced tokens by 29% while maintaining reasonable accuracy (83%)
+3. **RL requires more careful tuning**: Short RL run led to instability and many timeouts
+4. **Timeout handling matters**: Counting timeouts as failures gives accurate metrics
 
 ## Commands
 
@@ -142,7 +115,7 @@ uv run python -m tinker_cookbook.recipes.math_efficiency.generate_efficient_data
     num_problems=100 \
     output_path="/tmp/gsm8k_efficient.jsonl"
 
-# Step 2: Train SFT model (includes final eval)
+# Step 2: Train SFT model
 uv run python -m tinker_cookbook.recipes.math_efficiency.train_sft \
     model_name="Qwen/Qwen3-8B" \
     data_path="/tmp/gsm8k_efficient.jsonl" \
@@ -157,7 +130,8 @@ uv run python -m tinker_cookbook.recipes.math_efficiency.train_sft \
 ```bash
 uv run python -m tinker_cookbook.recipes.math_efficiency.train_rl \
     model_name="Qwen/Qwen3-8B" \
-    num_problems=10 \
+    num_problems=100 \
+    n_epochs=1 \
     group_size=8 \
     groups_per_batch=32 \
     lora_rank=128 \
