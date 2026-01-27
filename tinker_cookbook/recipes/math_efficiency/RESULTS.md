@@ -89,14 +89,25 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 | Thinking Tokens | 885 | 873 | -1.4% |
 | Efficiency | 0.05 | 0.05 | 0% |
 
+### Corrected Comparison (Apples-to-Apples)
+The short RL run only evaluated **68/100 problems** due to timeouts (the harder 32 timed out).
+When comparing on the **same 68 problems**:
+
+| Problems | Short RL | Long RL |
+|----------|----------|---------|
+| Same 68 problems | 88.6% | 85.3% |
+| 32 harder problems (timed out in short) | N/A | 56.2% |
+
+The apparent 12.6% gap (88.6% vs 76.0%) was misleading - the real gap is only **3.3%** on the same problems.
+
 ### Observations
-- **Short RL run** (1 epoch, 10 problems): Best accuracy (88.6%), good token reduction
-- **Long RL run** (4 epochs, 100 problems): Model overfit to training distribution
-  - Training showed clear learning (best_tokens 1246→934, 25% reduction)
-  - But eval accuracy dropped to baseline levels (76%)
-  - Suggests the efficiency reward may have pushed the model to cut corners
-- The self-improving efficiency reward (`best_so_far / num_tokens`) effectively reduced token counts during training
-- More training doesn't always improve generalization - careful tuning needed
+- **Short RL run** reported 88.6% accuracy, but this excluded 32 harder problems that timed out
+- **Long RL run** evaluated all 100 problems including the harder ones
+- On the same 68 problems, both runs performed similarly (88.6% vs 85.3%)
+- Training showed clear learning (best_tokens 1246→934, 25% reduction during training)
+- The self-improving efficiency reward (`best_so_far / num_tokens`) effectively reduced token counts
+- Key insight: Eval timeouts can bias results - always compare on the same problem set
+- **Fix applied**: `eval.py` now counts timeouts and extraction failures as 0% pass rate instead of excluding them
 
 ## Goals vs Results
 | Goal | Target | SFT | RL (short) | RL (long) |

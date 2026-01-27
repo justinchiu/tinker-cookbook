@@ -187,7 +187,7 @@ async def evaluate_problem(
     num_samples: int,
     max_tokens: int,
     temperature: float,
-) -> ProblemResult | None:
+) -> ProblemResult:
     """Evaluate a single problem with multiple samples."""
     completions = await sample_completions(
         sampling_client,
@@ -199,8 +199,17 @@ async def evaluate_problem(
     )
 
     if not completions:
-        logger.warning(f"Problem {problem_id}: No completions returned (timeout/error)")
-        return None
+        # Timeout/error counts as failure (pass_rate=0), not excluded
+        logger.warning(f"Problem {problem_id}: No completions returned (timeout/error) - counting as 0% pass")
+        return ProblemResult(
+            problem_id=problem_id,
+            problem=problem,
+            reference_answer=reference_answer,
+            samples=[],
+            pass_rate=0.0,
+            mean_tokens=0.0,
+            mean_thinking_tokens=0.0,
+        )
 
     samples = []
     sample_token_counts = []
@@ -276,15 +285,23 @@ async def run_evaluation(
     semaphore = asyncio.Semaphore(concurrency)
     pbar = tqdm(total=len(dataset), desc="Evaluating")
 
-    async def evaluate_with_semaphore(idx: int, row: dict) -> ProblemResult | None:
+    async def evaluate_with_semaphore(idx: int, row: dict) -> ProblemResult:
         async with semaphore:
             problem = row["question"]
             try:
                 reference_answer = extract_gsm8k_final_answer(row["answer"])
             except ValueError:
-                logger.warning(f"Could not extract reference answer for problem {idx}")
+                logger.warning(f"Could not extract reference answer for problem {idx} - counting as 0% pass")
                 pbar.update(1)
-                return None
+                return ProblemResult(
+                    problem_id=idx,
+                    problem=problem,
+                    reference_answer="<extraction failed>",
+                    samples=[],
+                    pass_rate=0.0,
+                    mean_tokens=0.0,
+                    mean_thinking_tokens=0.0,
+                )
 
             result = await evaluate_problem(
                 sampling_client,
@@ -305,12 +322,12 @@ async def run_evaluation(
     results = await asyncio.gather(*tasks)
     pbar.close()
 
-    # Filter out None results
-    problems = [r for r in results if r is not None]
+    # All problems are included (timeouts and extraction failures count as pass_rate=0)
+    problems: list[ProblemResult] = list(results)
 
-    # Compute aggregate metrics
-    all_tokens = [s.total_tokens for p in problems for s in p.samples]
-    all_tokens_sorted = sorted(all_tokens)
+    # Compute aggregate metrics (only from problems with actual samples)
+    all_tokens = [s.total_tokens for p in problems for s in p.samples if p.samples]
+    all_tokens_sorted = sorted(all_tokens) if all_tokens else [0]
 
     accuracy = sum(p.pass_rate for p in problems) / len(problems) if problems else 0.0
     mean_tokens = sum(all_tokens) / len(all_tokens) if all_tokens else 0.0
