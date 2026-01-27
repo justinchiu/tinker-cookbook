@@ -18,6 +18,7 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 | Baseline | 91.0% | 1805 | 1308 | 0.05 | [baseline-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/0zx66j80) |
 | SFT | 83.0% | 1278 | 850 | 0.06 | [sft-eval-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/hwkgnpo1) |
 | RL (1 epoch) | 59.0% | 1302 | 622 | 0.05 | [rl-train-v2](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/khmkki1q) |
+| **RL (10 epochs)** | **73.0%** | 1399 | 835 | 0.05 | [rl-train-v3](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/rl-train-v3) |
 
 ## Baseline Evaluation
 
@@ -88,12 +89,40 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 - Thinking tokens reduced significantly (-52%) but at cost of accuracy
 - Would benefit from longer training with more careful hyperparameter tuning
 
+### RL v3: Longer Training (10 epochs)
+
+**Training:**
+- **Run:** [rl-train-v3](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/rl-train-v3)
+- 100 problems, 10 epochs (40 batches)
+- Group size: 8, Groups per batch: 32
+- LoRA rank: 128
+- Learning rate: 5e-7
+- **KL penalty: 0.01** (added to prevent drift)
+
+**Evaluation:**
+| Metric | Baseline | RL (1 epoch) | RL (10 epochs) | Change vs 1 epoch |
+|--------|----------|--------------|----------------|-------------------|
+| Accuracy | 91.0% | 59.0% | 73.0% | **+14%** |
+| Mean Tokens | 1805 | 1302 | 1399 | +7% |
+| Thinking Tokens | 1308 | 622 | 835 | +34% |
+| Efficiency | 0.05 | 0.05 | 0.05 | 0% |
+| Timeouts | 4 | 37 | 26 | -11 |
+
+**Observations:**
+- More training significantly improved accuracy (59% → 73%)
+- KL penalty helped stabilize training
+- Fewer timeouts (26 vs 37) indicate more stable model
+- Still not matching SFT (83%) but much improved over 1 epoch
+- Training showed 91-100% correct during training, gap to eval suggests overfitting
+
 ## Key Findings
 
-1. **SFT is the most reliable method** for efficiency training with limited compute
+1. **SFT remains the most reliable method** for efficiency training with limited compute
 2. **Token reduction achieved**: SFT reduced tokens by 29% while maintaining reasonable accuracy (83%)
-3. **RL requires more careful tuning**: Short RL run led to instability and many timeouts
-4. **Timeout handling matters**: Counting timeouts as failures gives accurate metrics
+3. **RL benefits from longer training**: 10 epochs improved accuracy from 59% to 73% (vs 1 epoch)
+4. **KL penalty helps stability**: Adding kl_penalty_coef=0.01 reduced timeouts from 37 to 26
+5. **Training-eval gap in RL**: Training shows 91-100% correct but eval shows 73% - suggests overfitting to training problems
+6. **Timeout handling matters**: Counting timeouts as failures gives accurate metrics
 
 ## Commands
 
@@ -131,9 +160,10 @@ uv run python -m tinker_cookbook.recipes.math_efficiency.train_sft \
 uv run python -m tinker_cookbook.recipes.math_efficiency.train_rl \
     model_name="Qwen/Qwen3-8B" \
     num_problems=100 \
-    n_epochs=1 \
+    n_epochs=10 \
     group_size=8 \
     groups_per_batch=32 \
+    kl_penalty_coef=0.01 \
     lora_rank=128 \
     log_path="/tmp/math_efficiency_rl" \
     behavior_if_log_dir_exists="delete"
