@@ -11,7 +11,8 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 |-------|----------|-------------|-----------------|------------|-------|
 | Baseline | 76.5% | 1555 | 885 | 0.05 | [baseline-eval-100](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/o33z0050) |
 | SFT | 85.0% | 1371 | 842 | 0.06 | [sft-eval](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/ufn4hevx) |
-| RL | **88.6%** | **1381** | **915** | **0.06** | [rl-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/r5aqsevm) |
+| RL (short) | **88.6%** | **1381** | 915 | **0.06** | [rl-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/r5aqsevm) |
+| RL (long) | 76.0% | 1551 | 873 | 0.05 | [rl-train-long](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/7i6bvi3r) |
 
 ## Baseline Evaluation (100 problems)
 
@@ -57,37 +58,58 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 
 ## Method 2: Online RL with Efficiency Reward
 
-### Training
+### Training (Short Run)
 - **Run:** [rl-train](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/r5aqsevm)
-- 10 problems, 4 batches
+- 10 problems, 1 epoch (4 batches)
 - Group size: 8, Groups per batch: 32
 - LoRA rank: 128
 - Learning rate: 5e-7 (scaled from base 1e-6)
 
-### Evaluation
+### Evaluation (Short Run)
 - 68/100 problems evaluated (some timeouts)
 
-| Metric | Baseline | SFT | RL | Change (vs Baseline) |
+| Metric | Baseline | SFT | RL (short) | Change (vs Baseline) |
 |--------|----------|-----|-----|--------|
 | Accuracy | 76.5% | 85.0% | 88.6% | **+12.1%** |
 | Mean Tokens | 1555 | 1371 | 1381 | **-11%** |
 | Thinking Tokens | 885 | 842 | 915 | +3% |
 | Efficiency | 0.05 | 0.06 | 0.06 | **+20%** |
 
+### Training (Long Run - 4 Epochs)
+- **Run:** [rl-train-long](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/7i6bvi3r)
+- 100 problems, 4 epochs (16 batches total)
+- Best tokens decreased from 1246 → 934 during training (25% reduction)
+- Final average best tokens: 1045
+
+### Evaluation (Long Run)
+| Metric | Baseline | RL (long) | Change |
+|--------|----------|-----------|--------|
+| Accuracy | 76.5% | 76.0% | -0.5% |
+| Mean Tokens | 1555 | 1551 | -0.3% |
+| Thinking Tokens | 885 | 873 | -1.4% |
+| Efficiency | 0.05 | 0.05 | 0% |
+
 ### Observations
-- RL achieved the highest accuracy (88.6%) among all methods
-- Token count similar to SFT (1381 vs 1371)
-- The efficiency reward encouraged correct answers while penalizing longer solutions
-- Training with only 10 problems showed promising results
+- **Short RL run** (1 epoch, 10 problems): Best accuracy (88.6%), good token reduction
+- **Long RL run** (4 epochs, 100 problems): Model overfit to training distribution
+  - Training showed clear learning (best_tokens 1246→934, 25% reduction)
+  - But eval accuracy dropped to baseline levels (76%)
+  - Suggests the efficiency reward may have pushed the model to cut corners
+- The self-improving efficiency reward (`best_so_far / num_tokens`) effectively reduced token counts during training
+- More training doesn't always improve generalization - careful tuning needed
 
 ## Goals vs Results
-| Goal | Target | SFT Result | RL Result |
-|------|--------|------------|-----------|
-| Maintain accuracy | >80% of baseline (>61%) | 85% | 88.6% |
-| Reduce tokens | <70% of baseline (<1089) | 1371 (88%) | 1381 (89%) |
-| Maximize efficiency | Higher than baseline | 0.06 (+20%) | 0.06 (+20%) |
+| Goal | Target | SFT | RL (short) | RL (long) |
+|------|--------|-----|------------|-----------|
+| Maintain accuracy | >80% of baseline (>61%) | 85% ✓ | 88.6% ✓ | 76% ✓ |
+| Reduce tokens | <70% of baseline (<1089) | 1371 (88%) | 1381 (89%) | 1551 (100%) |
+| Maximize efficiency | Higher than baseline | 0.06 (+20%) | 0.06 (+20%) | 0.05 (0%) |
 
-Both methods exceeded accuracy goals. Neither hit the aggressive token reduction target, but both achieved meaningful improvements in efficiency.
+**Key Findings:**
+- SFT and short RL both exceeded accuracy goals and improved efficiency
+- Short RL (1 epoch) achieved the best accuracy (88.6%)
+- Long RL (4 epochs) showed overfitting - training metrics improved but eval didn't
+- Neither method hit the aggressive 30% token reduction target
 
 ## Commands
 

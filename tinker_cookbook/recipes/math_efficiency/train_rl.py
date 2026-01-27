@@ -58,6 +58,7 @@ class CLIConfig:
     # Environment configuration
     num_problems: int = 10  # Fixed set of GSM-8K problems
     seed: int = 42  # Seed for problem selection
+    n_epochs: int = 1  # Number of epochs (passes through the dataset)
 
     # RL hyperparameters (based on compute-optimal scaling)
     group_size: int = 8  # n: parallel rollouts per problem (primary lever)
@@ -149,6 +150,7 @@ async def cli_main(cli_config: CLIConfig):
         group_size=cli_config.group_size,
         num_problems=cli_config.num_problems,
         seed=cli_config.seed,
+        n_epochs=cli_config.n_epochs,
     )
 
     # Create streaming config if requested
@@ -189,7 +191,7 @@ async def cli_main(cli_config: CLIConfig):
 
     logger.info(f"Starting RL training with efficiency reward")
     logger.info(f"Log path: {log_path}")
-    logger.info(f"Problems: {cli_config.num_problems}, Group size: {cli_config.group_size}")
+    logger.info(f"Problems: {cli_config.num_problems}, Group size: {cli_config.group_size}, Epochs: {cli_config.n_epochs}")
 
     # Run training
     await main(config)

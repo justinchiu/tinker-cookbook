@@ -176,16 +176,21 @@ class EfficientGsm8kDataset(RLDataset):
         convo_prefix: list[renderers.Message] | None = None,
         num_problems: int = 100,
         seed: int = 42,
+        n_epochs: int = 1,
     ):
         self.ds = get_fixed_gsm8k_problems(num_problems, seed)
         self.batch_size = batch_size
         self.group_size = group_size
         self.renderer = renderer
         self.convo_prefix = convo_prefix
+        self.n_epochs = n_epochs
+        self._batches_per_epoch = math.ceil(len(self.ds) / self.batch_size)
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
-        batch_start = index * self.batch_size
-        batch_end = min((index + 1) * self.batch_size, len(self.ds))
+        # Map index to epoch and batch within epoch
+        batch_within_epoch = index % self._batches_per_epoch
+        batch_start = batch_within_epoch * self.batch_size
+        batch_end = min((batch_within_epoch + 1) * self.batch_size, len(self.ds))
         assert batch_start < batch_end, "Incorrect batch size"
         return [
             builder
@@ -194,7 +199,7 @@ class EfficientGsm8kDataset(RLDataset):
         ]
 
     def __len__(self) -> int:
-        return math.ceil(len(self.ds) / self.batch_size)
+        return self._batches_per_epoch * self.n_epochs
 
     def _make_env_group_builder(
         self, x: dict[str, str], group_size: int
@@ -230,6 +235,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
     group_size: int
     num_problems: int = 10
     seed: int = 42
+    n_epochs: int = 1
     convo_prefix: list[renderers.Message] | None = None
 
     async def __call__(self) -> tuple[EfficientGsm8kDataset, None]:
@@ -243,6 +249,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
                 convo_prefix=self.convo_prefix,
                 num_problems=self.num_problems,
                 seed=self.seed,
+                n_epochs=self.n_epochs,
             ),
             None,  # No separate test dataset
         )
