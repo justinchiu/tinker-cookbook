@@ -1,0 +1,27 @@
+INFO:tinker.lib.public_interfaces.service_client:ServiceClient initialized for session d699dd74-d609-5d22-8f96-fe1bdf840fc6
+INFO:__main__:Evaluating on 10 problems with 4 samples each
+Evaluating:   0%|          | 0/10 [00:00<?, ?it/s]INFO:__main__:Problem 0: ✓✓✓✓ | tokens(think): 756(543), 858(639), 1077(844), 1137(908) | mean=957, pass=100%
+Evaluating:  10%|█         | 1/10 [00:16<02:27, 16.40s/it]INFO:__main__:Problem 1: ✓✓✓✓ | tokens(think): 1933(1519), 1767(1373), 1975(1536), 2048(1784) | mean=1931, pass=100%
+Evaluating:  20%|██        | 2/10 [00:43<02:59, 22.48s/it]INFO:__main__:Problem 2: ✓✓✓✓ | tokens(think): 2048(1737), 1947(1500), 2048(1989), 1937(1539) | mean=1995, pass=100%
+Evaluating:  30%|███       | 3/10 [02:09<06:00, 51.46s/it]INFO:__main__:Problem 3: ✓✓✗✓ | tokens(think): 1236(1044), 1112(885), 2048(0), 1365(1137) | mean=1440, pass=75%
+Evaluating:  40%|████      | 4/10 [02:35<04:10, 41.74s/it]INFO:__main__:Problem 4: ✓✓✓✓ | tokens(think): 708(486), 1008(758), 1487(1190), 1269(1038) | mean=1118, pass=100%
+Evaluating:  50%|█████     | 5/10 [03:01<02:59, 35.90s/it]INFO:__main__:Problem 5: ✓✗✗✓ | tokens(think): 1910(1532), 2048(0), 2048(0), 1985(1644) | mean=1998, pass=50%
+Evaluating:  60%|██████    | 6/10 [03:27<02:10, 32.68s/it]INFO:__main__:Problem 6: ✓✓✓✓ | tokens(think): 576(398), 819(655), 1060(862), 1475(1240) | mean=982, pass=100%
+Evaluating:  70%|███████   | 7/10 [03:48<01:26, 28.81s/it]INFO:__main__:Problem 7: ✓✓✓✓ | tokens(think): 1676(1395), 1791(1461), 1725(1412), 1559(1283) | mean=1688, pass=100%
+Evaluating:  80%|████████  | 8/10 [04:13<00:55, 27.62s/it]INFO:__main__:Problem 8: ✓✓✓✓ | tokens(think): 1315(1015), 817(645), 1485(1284), 1073(801) | mean=1172, pass=100%
+Evaluating:  90%|█████████ | 9/10 [04:34<00:25, 25.51s/it]INFO:__main__:Problem 9: ✓✓✓✓ | tokens(think): 1527(1254), 1467(1131), 1664(1331), 1982(1709) | mean=1660, pass=100%
+Evaluating: 100%|██████████| 10/10 [04:59<00:00, 29.99s/it]
+
+============================================================
+Model: Qwen/Qwen3-8B
+Problems: 10, Samples per problem: 4
+============================================================
+Metric                              Value
+----------------------------------------
+Accuracy                           92.5%
+Mean Tokens                        1494.2
+Median Tokens                      1527.0
+P90 Tokens                         2048.0
+Mean Thinking Tokens               1087.5
+Efficiency Score                     0.06
+============================================================

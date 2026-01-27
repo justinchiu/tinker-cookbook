@@ -3,11 +3,10 @@ Efficient Math Environment with length-penalized reward.
 
 The reward function incentivizes correct AND short answers:
 - If incorrect: reward = 0 (no gaming with short gibberish)
-- If correct: reward = -num_tokens (shorter = higher reward)
+- If correct: reward = max_tokens - num_tokens (shorter = higher reward)
 
-With GRPO-style advantage computation, the group centering normalizes
-the rewards, so shorter correct solutions get positive advantage while
-longer correct solutions get negative advantage.
+Correct answers always get positive reward, with shorter solutions
+getting higher rewards. Incorrect answers get 0.
 """
 
 import math
@@ -41,8 +40,8 @@ from tinker_cookbook.utils import logtree
 class EfficientMathEnv(MathEnv):
     """MathEnv with length-penalized reward.
 
-    Rewards correct answers with -num_tokens, so shorter correct solutions
-    get higher rewards. GRPO advantage computation handles normalization.
+    Rewards correct answers with (max_tokens - num_tokens), so shorter correct
+    solutions get higher positive rewards. Incorrect answers get 0.
     """
 
     def __init__(
@@ -53,8 +52,10 @@ class EfficientMathEnv(MathEnv):
         convo_prefix: list[renderers.Message] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
         timeout: float = 1.0,
+        max_tokens: int = 4096,
     ):
         super().__init__(problem, answer, renderer, convo_prefix, grader, timeout)
+        self.max_tokens = max_tokens
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -69,7 +70,7 @@ class EfficientMathEnv(MathEnv):
 
         Reward formula:
         - If incorrect: reward = 0
-        - If correct: reward = -num_tokens (shorter = higher)
+        - If correct: reward = max_tokens - num_tokens (shorter = higher)
         """
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
@@ -81,10 +82,11 @@ class EfficientMathEnv(MathEnv):
         # Count tokens in the response
         num_tokens = len(action)
 
-        # Compute efficiency reward: correct * -num_tokens
-        # GRPO advantage computation will normalize within groups
+        # Compute efficiency reward: correct * (max_tokens - num_tokens)
+        # Correct answers get positive reward, shorter = higher
+        # Incorrect answers get 0
         if correct_answer:
-            reward = -num_tokens
+            reward = float(self.max_tokens - num_tokens)
         else:
             reward = 0.0
 
@@ -144,6 +146,7 @@ class EfficientGsm8kDataset(RLDataset):
         num_problems: int = 100,
         seed: int = 42,
         n_epochs: int = 1,
+        max_tokens: int = 4096,
     ):
         self.ds = get_fixed_gsm8k_problems(num_problems, seed)
         self.batch_size = batch_size
@@ -151,6 +154,7 @@ class EfficientGsm8kDataset(RLDataset):
         self.renderer = renderer
         self.convo_prefix = convo_prefix
         self.n_epochs = n_epochs
+        self.max_tokens = max_tokens
         self._batches_per_epoch = math.ceil(len(self.ds) / self.batch_size)
 
     def get_batch(self, index: int) -> Sequence[EnvGroupBuilder]:
@@ -184,6 +188,7 @@ class EfficientGsm8kDataset(RLDataset):
                 answer,
                 self.renderer,
                 convo_prefix=self.convo_prefix,
+                max_tokens=self.max_tokens,
             ),
             num_envs=group_size,
         )
@@ -200,6 +205,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
     num_problems: int = 10
     seed: int = 42
     n_epochs: int = 1
+    max_tokens: int = 4096
     convo_prefix: list[renderers.Message] | None = None
 
     async def __call__(self) -> tuple[EfficientGsm8kDataset, None]:
@@ -214,6 +220,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
                 num_problems=self.num_problems,
                 seed=self.seed,
                 n_epochs=self.n_epochs,
+                max_tokens=self.max_tokens,
             ),
             None,  # No separate test dataset
         )

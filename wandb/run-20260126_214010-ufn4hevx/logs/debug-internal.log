@@ -1,0 +1,12 @@
+{"time":"2026-01-26T21:40:10.612399606Z","level":"INFO","msg":"stream: starting","core version":"0.24.0"}
+{"time":"2026-01-26T21:40:10.783956861Z","level":"INFO","msg":"stream: created new stream","id":"ufn4hevx"}
+{"time":"2026-01-26T21:40:10.78404702Z","level":"INFO","msg":"handler: started","stream_id":"ufn4hevx"}
+{"time":"2026-01-26T21:40:10.78410771Z","level":"INFO","msg":"stream: started","id":"ufn4hevx"}
+{"time":"2026-01-26T21:40:10.784123047Z","level":"INFO","msg":"writer: started","stream_id":"ufn4hevx"}
+{"time":"2026-01-26T21:40:10.784139301Z","level":"INFO","msg":"sender: started","stream_id":"ufn4hevx"}
+{"time":"2026-01-26T21:43:55.782705472Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2026-01-26T21:43:55.918546975Z","level":"INFO","msg":"handler: operation stats","stats":{}}
+{"time":"2026-01-26T21:43:55.920968005Z","level":"INFO","msg":"stream: closing","id":"ufn4hevx"}
+{"time":"2026-01-26T21:43:55.920979747Z","level":"INFO","msg":"handler: closed","stream_id":"ufn4hevx"}
+{"time":"2026-01-26T21:43:55.921017107Z","level":"INFO","msg":"sender: closed","stream_id":"ufn4hevx"}
+{"time":"2026-01-26T21:43:55.921029314Z","level":"INFO","msg":"stream: closed","id":"ufn4hevx"}

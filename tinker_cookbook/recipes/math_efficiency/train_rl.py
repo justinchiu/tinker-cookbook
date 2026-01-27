@@ -149,6 +149,7 @@ async def cli_main(cli_config: CLIConfig):
         num_problems=cli_config.num_problems,
         seed=cli_config.seed,
         n_epochs=cli_config.n_epochs,
+        max_tokens=cli_config.max_tokens,
     )
 
     # Create streaming config if requested

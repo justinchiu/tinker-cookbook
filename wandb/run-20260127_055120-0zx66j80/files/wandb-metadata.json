@@ -1,0 +1,33 @@
+{
+  "os": "Linux-6.14.0-1016-aws-x86_64-with-glibc2.39",
+  "python": "CPython 3.13.9",
+  "startedAt": "2026-01-27T05:51:20.919282Z",
+  "args": [
+    "model_name=Qwen/Qwen3-8B",
+    "num_problems=100",
+    "samples_per_problem=4",
+    "wandb_name=baseline-eval-v2",
+    "output_path=/tmp/baseline_eval_v2.json"
+  ],
+  "program": "-m tinker_cookbook.recipes.math_efficiency.eval",
+  "git": {
+    "remote": "git@github.com:justinchiu/tinker-cookbook.git",
+    "commit": "c2ba54b89bf7b9f9d5ebf5d70d480a78f6642ae1"
+  },
+  "email": "jchiu@percepta.ai",
+  "root": "/home/ubuntu/code/tinker-cookbook-math-interview",
+  "host": "ip-10-42-133-168",
+  "executable": "/home/ubuntu/code/tinker-cookbook-math-interview/.venv/bin/python3",
+  "cpu_count": 8,
+  "cpu_count_logical": 16,
+  "disk": {
+    "/": {
+      "total": "2079114358784",
+      "used": "63252516864"
+    }
+  },
+  "memory": {
+    "total": "66330828800"
+  },
+  "writerId": "izs85u5u91zm5raoqjk44j3jsom1b23b"
+}

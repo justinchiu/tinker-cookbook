@@ -1,0 +1,66 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            yzisfeyezk026pnffvmlatteaxyzmou2:
+                args:
+                    - model_name=Qwen/Qwen3-8B
+                    - num_problems=10
+                    - samples_per_problem=4
+                    - max_tokens=2048
+                    - temperature=1.0
+                    - wandb_project=math-efficiency-interview
+                    - wandb_name=baseline-eval
+                    - output_path=/tmp/baseline_eval.json
+                cpu_count: 8
+                cpu_count_logical: 16
+                disk:
+                    /:
+                        total: "2079114358784"
+                        used: "63458709504"
+                email: jchiu@percepta.ai
+                executable: /home/ubuntu/code/tinker-cookbook-math-interview/.venv/bin/python3
+                git:
+                    commit: 2c87e8f4dd0d311c97e3ef95d4c2115548fb5d39
+                    remote: git@github.com:justinchiu/tinker-cookbook.git
+                host: ip-10-42-133-168
+                memory:
+                    total: "66330828800"
+                os: Linux-6.14.0-1016-aws-x86_64-with-glibc2.39
+                program: -m tinker_cookbook.recipes.math_efficiency.eval
+                python: CPython 3.13.9
+                root: /home/ubuntu/code/tinker-cookbook-math-interview
+                startedAt: "2026-01-26T21:02:12.902810Z"
+                writerId: yzisfeyezk026pnffvmlatteaxyzmou2
+        m: []
+        python_version: 3.13.9
+        t:
+            "1":
+                - 1
+                - 49
+                - 51
+            "2":
+                - 1
+                - 11
+                - 49
+                - 51
+            "3":
+                - 2
+                - 13
+                - 16
+            "4": 3.13.9
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
+checkpoint_path:
+    value: null
+max_tokens:
+    value: 2048
+model_name:
+    value: Qwen/Qwen3-8B
+num_problems:
+    value: 10
+samples_per_problem:
+    value: 4
+temperature:
+    value: 1
