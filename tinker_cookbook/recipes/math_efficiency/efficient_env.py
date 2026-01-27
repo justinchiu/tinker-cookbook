@@ -1,20 +1,19 @@
 """
-Efficient Math Environment with self-improving efficiency reward.
+Efficient Math Environment with length-penalized reward.
 
 The reward function incentivizes correct AND short answers:
 - If incorrect: reward = 0 (no gaming with short gibberish)
-- If correct: reward = best_so_far / num_tokens
-  - First correct answer sets the baseline (reward = 1.0)
-  - Shorter than best: reward > 1.0 (strong incentive)
-  - Longer than best: reward < 1.0 (still positive, but penalized)
+- If correct: reward = -num_tokens (shorter = higher reward)
 
-The target gets harder as the model finds shorter solutions (self-improving).
+With GRPO-style advantage computation, the group centering normalizes
+the rewards, so shorter correct solutions get positive advantage while
+longer correct solutions get negative advantage.
 """
 
 import math
 from dataclasses import dataclass
 from functools import partial
-from typing import ClassVar, Literal, Sequence, cast
+from typing import Literal, Sequence, cast
 
 import chz
 import tinker
@@ -40,16 +39,11 @@ from tinker_cookbook.utils import logtree
 
 
 class EfficientMathEnv(MathEnv):
-    """MathEnv with self-improving efficiency reward.
+    """MathEnv with length-penalized reward.
 
-    Tracks the best (shortest) correct answer seen for each problem globally.
-    Rewards correct answers proportionally to how much shorter they are
-    compared to the best seen so far.
+    Rewards correct answers with -num_tokens, so shorter correct solutions
+    get higher rewards. GRPO advantage computation handles normalization.
     """
-
-    # Class-level global tracking of best lengths per problem
-    # Key: problem hash, Value: best (shortest) token count seen
-    best_lengths: ClassVar[dict[str, int]] = {}
 
     def __init__(
         self,
@@ -59,11 +53,8 @@ class EfficientMathEnv(MathEnv):
         convo_prefix: list[renderers.Message] | None = None,
         grader: Literal["sympy", "math_verify"] = "sympy",
         timeout: float = 1.0,
-        problem_id: str | None = None,
     ):
         super().__init__(problem, answer, renderer, convo_prefix, grader, timeout)
-        # Use provided problem_id or hash of problem text
-        self.problem_id = problem_id or str(hash(problem))
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -78,7 +69,7 @@ class EfficientMathEnv(MathEnv):
 
         Reward formula:
         - If incorrect: reward = 0
-        - If correct: reward = best_so_far / num_tokens
+        - If correct: reward = -num_tokens (shorter = higher)
         """
         message, parse_success = self.renderer.parse_response(action)
         content = renderers.get_text_content(message)
@@ -90,25 +81,11 @@ class EfficientMathEnv(MathEnv):
         # Count tokens in the response
         num_tokens = len(action)
 
-        # Compute efficiency reward
+        # Compute efficiency reward: correct * -num_tokens
+        # GRPO advantage computation will normalize within groups
         if correct_answer:
-            # Get current best for this problem
-            current_best = self.best_lengths.get(self.problem_id, num_tokens)
-
-            # Compute reward: ratio of best to current
-            reward = current_best / num_tokens
-
-            # Update global best if this is shorter
-            self.best_lengths[self.problem_id] = min(current_best, num_tokens)
-
-            # Log the improvement
-            if num_tokens < current_best:
-                logtree.log_text(
-                    f"New best for problem {self.problem_id[:8]}: "
-                    f"{current_best} -> {num_tokens} tokens (improvement: {current_best - num_tokens})"
-                )
+            reward = -num_tokens
         else:
-            # Incorrect answer gets 0 reward
             reward = 0.0
 
         # Log the attempt
@@ -118,7 +95,7 @@ class EfficientMathEnv(MathEnv):
         logtree.log_text(
             f"Format Valid: {'✓' if correct_format else '✗'}, "
             f"Correct: {'✓' if correct_answer else '✗'}, "
-            f"Tokens: {num_tokens}, Reward: {reward:.3f}"
+            f"Tokens: {num_tokens}, Reward: {reward:.1f}"
         )
 
         return StepResult(
@@ -131,19 +108,9 @@ class EfficientMathEnv(MathEnv):
                 "correct": float(correct_answer),
                 "num_tokens": num_tokens,
                 "efficiency_reward": reward,
-                "best_tokens": self.best_lengths.get(self.problem_id, num_tokens),
             },
         )
 
-    @classmethod
-    def reset_best_lengths(cls):
-        """Reset the global best lengths tracking. Useful for testing."""
-        cls.best_lengths = {}
-
-    @classmethod
-    def get_best_lengths_summary(cls) -> dict[str, int]:
-        """Get a summary of current best lengths."""
-        return dict(cls.best_lengths)
 
 
 @dataclass(frozen=True)
@@ -207,8 +174,6 @@ class EfficientGsm8kDataset(RLDataset):
         try:
             problem = x["question"]
             answer = extract_gsm8k_final_answer(x["answer"])
-            # Use a stable problem ID based on the problem text
-            problem_id = str(hash(problem))
         except Exception as e:
             logger.warning(f"Failed to parse GSM8K row: {e}")
             return None
@@ -219,7 +184,6 @@ class EfficientGsm8kDataset(RLDataset):
                 answer,
                 self.renderer,
                 convo_prefix=self.convo_prefix,
-                problem_id=problem_id,
             ),
             num_envs=group_size,
         )

@@ -293,6 +293,7 @@ class Config:
     enable_trace: bool = False
 
     remove_constant_reward_groups: bool = False
+    normalize_advantages: bool = False  # If True, standardize advantages (mean=0, std=1)
     eval_every: int = 20  # 0 = disabled
     save_every: int = 20  # 0 = disabled
     load_checkpoint_path: str | None = None
@@ -752,6 +753,7 @@ async def prepare_minibatch(
     model_name: str,
     kl_penalty_coef: float,
     kl_discount_factor: float,
+    normalize_advantages: bool = False,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
 
@@ -766,7 +768,7 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
+        advantages_P = compute_advantages(trajectory_groups_P, normalize_advantages)
         data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
 
     # Incorporate KL penalty if configured
@@ -891,6 +893,7 @@ async def do_train_step_streaming_and_get_sampling_client(
                 model_name=cfg.model_name,
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
+                normalize_advantages=cfg.normalize_advantages,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -973,6 +976,7 @@ async def do_train_step_and_get_sampling_client(
         model_name=cfg.model_name,
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
+        normalize_advantages=cfg.normalize_advantages,
     )
     metrics.update(prepare_minibatch_metrics)
 

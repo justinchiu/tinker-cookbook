@@ -2,8 +2,7 @@
 RL training script for efficient math reasoning.
 
 Uses EfficientMathEnv which rewards correct AND short answers.
-The reward is self-improving: as the model finds shorter solutions,
-the target for good rewards becomes harder.
+Reward: correct * -num_tokens (GRPO-style advantage normalization handles the rest)
 Runs evaluation automatically after training completes.
 
 Based on compute-optimal RL scaling recommendations:
@@ -24,7 +23,6 @@ from tinker.types import LossFnType
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.recipes.math_efficiency.efficient_env import (
     EfficientGsm8kDatasetBuilder,
-    EfficientMathEnv,
 )
 from tinker_cookbook.recipes.math_efficiency.eval import (
     print_results_table,
@@ -103,6 +101,9 @@ class CLIConfig:
     # Minibatch streaming for overlapping sampling and training
     num_minibatches: int | None = None  # If set, enable streaming
 
+    # Advantage normalization (standardize to mean=0, std=1)
+    normalize_advantages: bool = True  # Recommended for length-based rewards
+
     # Final evaluation config
     run_final_eval: bool = True
     eval_num_problems: int = 10
@@ -138,9 +139,6 @@ async def cli_main(cli_config: CLIConfig):
         log_path = f"/tmp/tinker-examples/math_efficiency_rl/{run_name}"
 
     wandb_name = cli_config.wandb_name or run_name
-
-    # Reset best lengths tracking for fresh start
-    EfficientMathEnv.reset_best_lengths()
 
     # Create dataset builder
     dataset_builder = EfficientGsm8kDatasetBuilder(
@@ -184,6 +182,8 @@ async def cli_main(cli_config: CLIConfig):
         stream_minibatch_config=stream_minibatch_config,
         # Remove constant reward groups to focus on informative samples
         remove_constant_reward_groups=False,
+        # Normalize advantages for length-based rewards
+        normalize_advantages=cli_config.normalize_advantages,
     )
 
     # Check log directory
@@ -195,12 +195,6 @@ async def cli_main(cli_config: CLIConfig):
 
     # Run training
     await main(config)
-
-    # Log final best lengths summary
-    best_lengths = EfficientMathEnv.get_best_lengths_summary()
-    if best_lengths:
-        avg_best = sum(best_lengths.values()) / len(best_lengths)
-        logger.info(f"Final average best tokens across problems: {avg_best:.1f}")
 
     # Run final evaluation
     if cli_config.run_final_eval:

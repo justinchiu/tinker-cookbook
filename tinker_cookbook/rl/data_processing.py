@@ -20,14 +20,28 @@ from tinker_cookbook.utils.misc_utils import all_same, safezip
 logger = logging.getLogger(__name__)
 
 
-def compute_advantages(trajectory_groups_P: List[TrajectoryGroup]) -> List[torch.Tensor]:
-    """Compute advantages for each trajectory, centered within groups."""
+def compute_advantages(
+    trajectory_groups_P: List[TrajectoryGroup],
+    normalize_advantages: bool = False,
+) -> List[torch.Tensor]:
+    """Compute advantages for each trajectory, centered within groups.
+
+    Args:
+        trajectory_groups_P: List of trajectory groups
+        normalize_advantages: If True, standardize advantages (mean=0, std=1).
+            If False (default), only center by mean.
+    """
     advantages_P: list[torch.Tensor] = []
 
     for traj_group in trajectory_groups_P:
         rewards_G = torch.tensor(traj_group.get_total_rewards())
         # Center advantages within the group
-        advantages_G = rewards_G - rewards_G.mean()
+        mean = rewards_G.mean()
+        advantages_G = rewards_G - mean
+        # Optionally normalize by std for unit variance
+        if normalize_advantages:
+            std = rewards_G.std()
+            advantages_G = advantages_G / (std + 1e-8)
         advantages_P.append(advantages_G)
 
     return advantages_P
