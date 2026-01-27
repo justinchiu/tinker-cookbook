@@ -1,5 +1,0 @@
-INFO:tinker.lib.public_interfaces.service_client:ServiceClient initialized for session 866ce425-8cda-5b0c-9d44-0af79018458c
-Generating train split: 100%|██████████| 7473/7473 [00:00<00:00, 384000.41 examples/s]
-Generating test split: 100%|██████████| 1319/1319 [00:00<00:00, 193632.95 examples/s]
-INFO:__main__:Evaluating on 100 problems with 4 samples each
-Evaluating:   3%|▎         | 3/100 [02:32<1:21:46, 50.59s/it]
