@@ -115,14 +115,46 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 - Still not matching SFT (83%) but much improved over 1 epoch
 - Training showed 91-100% correct during training, gap to eval suggests overfitting
 
+### RL Overfit Experiment: High LR on Small Dataset
+
+**Key insight**: RL wasn't learning because LR was too low (5e-7). With higher LR (5e-5, same as SFT), RL successfully learns to shorten.
+
+**Training:**
+- **Run:** [rl-overfit-32prob-50ep-lr5e5](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/903j88qz)
+- 32 problems, 50 epochs (same problems every step)
+- Learning rate: **5e-5** (100x higher than previous runs)
+- No KL penalty
+
+**Training Curve (tokens vs steps):**
+| Step | Tokens | Accuracy | Notes |
+|------|--------|----------|-------|
+| 0 | 1832 | 95.7% | baseline |
+| 10 | 1012 | 96.9% | -45% tokens |
+| 15 | 611 | 96.9% | -67% tokens |
+| 20 | 184 | 94.9% | **-90% tokens** |
+| 25 | 113 | 93.8% | sweet spot |
+| 30 | 66 | 90.2% | pushing it |
+| 35 | 26 | 52.7% | collapsed |
+| 50 | 19 | 55.5% | over-optimized |
+
+**Observations:**
+- RL **successfully learns** to shorten with higher LR
+- Sweet spot around step 20-25: **-90% tokens with ~94% accuracy**
+- Without KL penalty, model eventually collapses (memorizes wrong short answers)
+- Model skips reasoning entirely at collapse: outputs `<think>\boxed{16}</think>\boxed{16}`
+
+**Follow-up run with 128 problems:**
+- **Run:** [rl-overfit-128prob-50ep-lr5e5](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/mo60meo8)
+- More problems may help prevent collapse through better generalization
+
 ## Key Findings
 
-1. **SFT remains the most reliable method** for efficiency training with limited compute
-2. **Token reduction achieved**: SFT reduced tokens by 29% while maintaining reasonable accuracy (83%)
-3. **RL benefits from longer training**: 10 epochs improved accuracy from 59% to 73% (vs 1 epoch)
-4. **KL penalty helps stability**: Adding kl_penalty_coef=0.01 reduced timeouts from 37 to 26
-5. **Training-eval gap in RL**: Training shows 91-100% correct but eval shows 73% - suggests overfitting to training problems
-6. **Timeout handling matters**: Counting timeouts as failures gives accurate metrics
+1. **SFT is simple and reliable** for efficiency training with limited compute
+2. **RL works with high LR**: Previous runs used LR=5e-7, but 5e-5 (same as SFT) enables learning
+3. **RL can achieve 90% token reduction** while maintaining 94% accuracy (step 20-25)
+4. **Without regularization, RL collapses**: Model over-optimizes for length, sacrifices accuracy
+5. **Early stopping or KL penalty needed**: To stay in sweet spot before collapse
+6. **Gradient signal is sparse**: Within-group token overlap causes cancellation; only distinguishing tokens provide learning signal
 
 ## Commands
 

@@ -65,7 +65,7 @@ class CLIConfig:
     # Learning rate - scaled automatically based on batch size
     # Base LR at batch=1024: 1e-6, we compute scaled version
     learning_rate: float | None = None  # If None, computed from base_lr
-    base_lr: float = 1e-6  # Base LR at batch_size=1024
+    base_lr: float = 1e-5  # Base LR at batch_size=1024
 
     # Sampling parameters
     max_tokens: int = 4096

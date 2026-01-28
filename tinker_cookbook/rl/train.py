@@ -125,8 +125,10 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
         )
 
     rewards = traj_group.get_total_rewards()
-    advantages_G = compute_advantages([traj_group])
-    data_D, metadata_D = assemble_training_data([traj_group], advantages_G)
+    # Compute both raw and normalized advantages for logging
+    advantages_raw = compute_advantages([traj_group], normalize_advantages=False)[0]
+    advantages_norm = compute_advantages([traj_group], normalize_advantages=True)[0]
+    data_D, metadata_D = assemble_training_data([traj_group], [advantages_norm])
 
     buf = io.StringIO()
 
@@ -135,11 +137,12 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
         print(s, file=buf)
 
     bprint("\n====== Trajectory Group ======")
+    bprint(f"Group stats: mean_reward={sum(rewards)/len(rewards):.1f}, std={torch.tensor(rewards).std():.1f}")
     last_metadata = None
     for datum, metadata in safezip(data_D, metadata_D):
         idx = metadata["traj_idx"]
         if metadata != last_metadata:
-            bprint(f"****** trajectory idx={idx}, reward={rewards[idx]:.3g} ******")
+            bprint(f"****** trajectory idx={idx}, reward={rewards[idx]:.3g}, adv_raw={advantages_raw[idx]:.3g}, adv_norm={advantages_norm[idx]:.3g} ******")
             # Print trajectory-level metrics
             if traj_group.metrics_G[idx]:
                 bprint("Trajectory metrics:")
