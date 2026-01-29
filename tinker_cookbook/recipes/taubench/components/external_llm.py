@@ -16,9 +16,16 @@ def is_retryable_error(exception: BaseException) -> bool:
     """Check if an exception is retryable (connection error, rate limit, server error, gateway error, or credit balance)."""
     if isinstance(exception, (litellm.APIConnectionError, litellm.InternalServerError, litellm.RateLimitError, litellm.BadGatewayError, litellm.Timeout)):
         return True
-    # Check for credit balance errors in the exception message
+    # Check for retryable patterns in the exception message
     error_str = str(exception).lower()
     if "credit balance" in error_str or "billing" in error_str:
+        return True
+    # Retry on 503, 502, connection reset, upstream errors
+    if any(pattern in error_str for pattern in [
+        "503", "502", "service unavailable", "bad gateway",
+        "upstream connect error", "connection termination", "reset before headers",
+        "overloaded", "temporarily unavailable"
+    ]):
         return True
     return False
 

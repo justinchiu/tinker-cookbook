@@ -100,9 +100,18 @@ class Tau2GymWrapper:
             Structured step result
         """
         # Run in thread to avoid blocking
-        obs, reward, terminated, truncated, info = await asyncio.to_thread(
-            self.env.step, action
-        )
+        try:
+            obs, reward, terminated, truncated, info = await asyncio.to_thread(
+                self.env.step, action
+            )
+        except json.JSONDecodeError as e:
+            # Handle malformed JSON from the model - return error observation instead of crashing
+            logger.warning("JSONDecodeError parsing action: %s. Action was: %r", e, action[:200])
+            obs = f"tool: Error: Invalid JSON in action - {e}"
+            reward = 0.0
+            terminated = False
+            truncated = False
+            info = {}
 
         # Parse observation type (pass terminated to suppress warning on episode end)
         obs_type, obs_content = self._parse_observation(obs, terminated=terminated)

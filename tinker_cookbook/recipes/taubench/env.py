@@ -578,7 +578,8 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
 
     def logging_tags(self) -> list[str]:
         """Return tags for logging/aggregation."""
-        return ["tau2", self.domain, self.task_id[:20]]
+        domain_tag = self.actual_domain or self.domain
+        return ["tau2", domain_tag, self.task_id[:20]]
 
 
 @dataclass(frozen=True)
