@@ -6,6 +6,7 @@ and assembling training batches.
 """
 
 import logging
+from dataclasses import dataclass, field
 from typing import List
 
 import tinker
@@ -97,6 +98,22 @@ def _flatten_chunks(chunks: list[tinker.ModelInputChunk]) -> FlatOb:
     return out
 
 
+@dataclass
+class SequenceAccumulator:
+    """Accumulates tokens, logprobs, advantages, and mask for building training Datums."""
+
+    full_sequence: FlatOb = field(default_factory=list)
+    sampled_logprobs: list[float] = field(default_factory=list)
+    advantages: list[float] = field(default_factory=list)
+    mask: list[float] = field(default_factory=list)
+
+    def clear(self):
+        self.full_sequence = []
+        self.sampled_logprobs = []
+        self.advantages = []
+        self.mask = []
+
+
 def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.Datum]:
     """
     Return one or more Datum objects corresponding to the trajectory.
@@ -116,28 +133,16 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
     Then we will merge the first two observation-action pairs into a single Datum,
     and the last observation-action pair into a separate Datum.
     """
-
-    class SequenceAccumulator:
-        full_sequence: list[FlatObElem] = []
-        sampled_logprobs: list[float] = []
-        advantages: list[float] = []
-        mask: list[float] = []
-
-        @classmethod
-        def clear(cls):
-            cls.full_sequence = []
-            cls.sampled_logprobs = []
-            cls.advantages = []
-            cls.mask = []
+    acc = SequenceAccumulator()
 
     def make_datum_from_state():
-        all_tokens_T = _flat_ob_to_model_input(SequenceAccumulator.full_sequence)
+        all_tokens_T = _flat_ob_to_model_input(acc.full_sequence)
         input_tokens_T, target_tokens_T = create_rightshifted_model_input_and_leftshifted_targets(
             list(all_tokens_T.chunks)
         )
-        sampled_logprobs_T = SequenceAccumulator.sampled_logprobs[1:]
-        advantages_T = SequenceAccumulator.advantages[1:]
-        mask_T = SequenceAccumulator.mask[1:]
+        sampled_logprobs_T = acc.sampled_logprobs[1:]
+        advantages_T = acc.advantages[1:]
+        mask_T = acc.mask[1:]
         assert (
             input_tokens_T.length
             == len(target_tokens_T)
@@ -160,26 +165,26 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
         ob = transition.ob
         ob_flat = _flatten_chunks(ob.chunks)
         ac_with_logprobs = transition.ac
-        if len(SequenceAccumulator.full_sequence) == 0:
+        if len(acc.full_sequence) == 0:
             delta_ob_flat = ob_flat
-        elif _is_prefix(SequenceAccumulator.full_sequence, ob_flat):
-            delta_ob_flat = ob_flat[len(SequenceAccumulator.full_sequence) :]
+        elif _is_prefix(acc.full_sequence, ob_flat):
+            delta_ob_flat = ob_flat[len(acc.full_sequence) :]
         else:
             data.append(make_datum_from_state())
-            SequenceAccumulator.clear()
+            acc.clear()
             delta_ob_flat = ob_flat
         delta_ob_len = _flat_ob_token_len(delta_ob_flat)
-        SequenceAccumulator.full_sequence.extend(delta_ob_flat)
-        SequenceAccumulator.full_sequence.extend(ac_with_logprobs.tokens)
-        SequenceAccumulator.sampled_logprobs.extend(
+        acc.full_sequence.extend(delta_ob_flat)
+        acc.full_sequence.extend(ac_with_logprobs.tokens)
+        acc.sampled_logprobs.extend(
             [0.0] * delta_ob_len + ac_with_logprobs.logprobs
         )
-        SequenceAccumulator.advantages.extend(
+        acc.advantages.extend(
             [0] * delta_ob_len + [traj_advantage] * len(ac_with_logprobs.tokens)
         )
-        SequenceAccumulator.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
+        acc.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
 
-    if SequenceAccumulator.full_sequence:
+    if acc.full_sequence:
         data.append(make_datum_from_state())
 
     return data
