@@ -56,7 +56,13 @@ def dump_config(config: Any) -> Any:
         # Recursively dump values to handle nested non-serializable fields
         return {k: dump_config(v) for k, v in asdict(config).items()}
     elif isinstance(config, dict):
-        return {k: dump_config(v) for k, v in config.items()}
+        out: dict[str, Any] = {}
+        for k, v in config.items():
+            key = dump_config(k)
+            if not isinstance(key, str):
+                key = str(key)
+            out[key] = dump_config(v)
+        return out
     elif isinstance(config, (list, tuple)):
         return [dump_config(item) for item in config]
     elif isinstance(config, Enum):

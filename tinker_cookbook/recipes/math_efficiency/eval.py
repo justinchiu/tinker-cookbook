@@ -117,7 +117,7 @@ async def sample_completions(
     num_samples: int,
     max_tokens: int,
     temperature: float,
-    timeout: float = 60.0,
+    timeout: float = 120.0,
     max_retries: int = 3,
 ) -> list[tuple[str, list[int]]]:
     """Sample multiple completions for a problem with timeout and retry."""

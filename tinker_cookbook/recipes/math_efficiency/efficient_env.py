@@ -32,6 +32,7 @@ from tinker_cookbook.rl.types import (
     RLDataset,
     RLDatasetBuilder,
     StepResult,
+    StrategyId,
 )
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.utils import logtree
@@ -53,9 +54,11 @@ class EfficientMathEnv(MathEnv):
         grader: Literal["sympy", "math_verify"] = "sympy",
         timeout: float = 1.0,
         max_tokens: int = 4096,
+        question_suffix_extra: str | None = None,
     ):
         super().__init__(problem, answer, renderer, convo_prefix, grader, timeout)
         self.max_tokens = max_tokens
+        self.question_suffix_extra = question_suffix_extra
 
     @classmethod
     def question_suffix(cls) -> str:
@@ -63,7 +66,10 @@ class EfficientMathEnv(MathEnv):
         return " Provide a numerical answer without units, written inside \\boxed{}."
 
     def get_question(self) -> str:
-        return self.problem + self.question_suffix()
+        suffix = self.question_suffix()
+        if self.question_suffix_extra:
+            return self.problem + suffix + self.question_suffix_extra
+        return self.problem + suffix
 
     async def step(self, action: Action) -> StepResult:
         """Execute action and compute efficiency reward.
@@ -114,6 +120,25 @@ class EfficientMathEnv(MathEnv):
         )
 
 
+class ExItStrategy(StrategyId):
+    IID = "iid"
+    PROMPT_AUG = "prompt_aug"
+    ANSWER_HINT = "answer_hint"
+
+
+@dataclass(frozen=True)
+class ExItStrategyConfig:
+    strategy_id: ExItStrategy
+    sampling_prefix: list[renderers.Message]
+    training_prefix: list[renderers.Message]
+
+
+ANSWER_HINT_TEXT = (
+    "The answer is {answer}. Solve this problem as if you didn't know the answer, "
+    "but then stop once you reach the answer. No need to verify or try again."
+)
+
+
 
 @dataclass(frozen=True)
 class EfficientProblemGroupBuilder(ProblemGroupBuilder):
@@ -143,6 +168,7 @@ class EfficientGsm8kDataset(RLDataset):
         group_size: int,
         renderer: renderers.Renderer,
         convo_prefix: list[renderers.Message] | None = None,
+        strategy_configs: list[ExItStrategyConfig] | None = None,
         num_problems: int = 100,
         seed: int = 42,
         n_epochs: int = 1,
@@ -153,6 +179,14 @@ class EfficientGsm8kDataset(RLDataset):
         self.group_size = group_size
         self.renderer = renderer
         self.convo_prefix = convo_prefix
+        base_prefix = convo_prefix or []
+        self.strategy_configs = strategy_configs or [
+            ExItStrategyConfig(
+                strategy_id=ExItStrategy.IID,
+                sampling_prefix=base_prefix,
+                training_prefix=base_prefix,
+            )
+        ]
         self.n_epochs = n_epochs
         self.max_tokens = max_tokens
         self._batches_per_epoch = math.ceil(len(self.ds) / self.batch_size)
@@ -166,32 +200,62 @@ class EfficientGsm8kDataset(RLDataset):
         return [
             builder
             for row in self.ds.select(range(batch_start, batch_end))
-            if (builder := self._make_env_group_builder(row, self.group_size)) is not None
+            for builder in self._make_env_group_builders(row, self.group_size)
         ]
 
     def __len__(self) -> int:
         return self._batches_per_epoch * self.n_epochs
 
-    def _make_env_group_builder(
+    def _make_env_group_builders(
         self, x: dict[str, str], group_size: int
-    ) -> EfficientProblemGroupBuilder | None:
+    ) -> list[EfficientProblemGroupBuilder]:
         try:
             problem = x["question"]
             answer = extract_gsm8k_final_answer(x["answer"])
         except Exception as e:
             logger.warning(f"Failed to parse GSM8K row: {e}")
-            return None
-        return EfficientProblemGroupBuilder(
-            env_thunk=partial(
-                EfficientMathEnv,
-                problem,
-                answer,
-                self.renderer,
-                convo_prefix=self.convo_prefix,
-                max_tokens=self.max_tokens,
-            ),
-            num_envs=group_size,
-        )
+            return []
+        question = problem + EfficientMathEnv.question_suffix()
+        builders: list[EfficientProblemGroupBuilder] = []
+        for config in self.strategy_configs:
+            sampling_prefix = list(config.sampling_prefix)
+            training_prefix = list(config.training_prefix)
+            question_suffix_extra = None
+            if config.strategy_id == ExItStrategy.ANSWER_HINT:
+                question_suffix_extra = "\n\n" + ANSWER_HINT_TEXT.format(answer=answer)
+            context_transform = None
+            if training_prefix != sampling_prefix or question_suffix_extra is not None:
+                renderer = self.renderer
+
+                def _transform(
+                    _ob: tinker.ModelInput,
+                    _turn_idx: int,
+                    *,
+                    _question: str = question,
+                    _renderer: renderers.Renderer = renderer,
+                    _training_prefix: list[renderers.Message] = training_prefix,
+                ) -> tinker.ModelInput:
+                    convo = _training_prefix + [{"role": "user", "content": _question}]
+                    return _renderer.build_generation_prompt(convo)
+
+                context_transform = _transform
+            builders.append(
+                EfficientProblemGroupBuilder(
+                    env_thunk=partial(
+                        EfficientMathEnv,
+                        problem,
+                        answer,
+                        self.renderer,
+                        convo_prefix=sampling_prefix,
+                        max_tokens=self.max_tokens,
+                        question_suffix_extra=question_suffix_extra,
+                    ),
+                    num_envs=group_size,
+                    strategy_id=config.strategy_id,
+                    context_transform=context_transform,
+                )
+            )
+        return builders
 
 
 @chz.chz
@@ -207,6 +271,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
     n_epochs: int = 1
     max_tokens: int = 4096
     convo_prefix: list[renderers.Message] | None = None
+    strategy_configs: list[ExItStrategyConfig] | None = None
 
     async def __call__(self) -> tuple[EfficientGsm8kDataset, None]:
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
@@ -217,6 +282,7 @@ class EfficientGsm8kDatasetBuilder(RLDatasetBuilder):
                 group_size=self.group_size,
                 renderer=renderer,
                 convo_prefix=self.convo_prefix,
+                strategy_configs=self.strategy_configs,
                 num_problems=self.num_problems,
                 seed=self.seed,
                 n_epochs=self.n_epochs,

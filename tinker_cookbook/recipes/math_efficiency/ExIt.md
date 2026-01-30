@@ -29,6 +29,11 @@ We **reuse the sampled completion tokens verbatim** and **swap only the context*
      - problem only (drop feedback + attempt1)
    - completion = attempt2 tokens
 
+4) **Answer‑hinted prompt (teacher)**
+   - sampling_context includes the ground‑truth answer in the prompt
+   - training_context removes the answer hint
+   - teaches the model to stop once it reaches the answer without scaffolding
+
 ## Stratified mixture of experts
 We treat each search strategy as a **stratum** and average their gradient contributions:
 ```
@@ -195,6 +200,40 @@ This is the **critical step** for correct likelihood ratios.
 4) Interleave strategies in `get_batch(...)` so each batch contains a mix (or make it a config toggle).
 
 **Outcome:** ExIt runs multiple search modes per batch and trains on the unified stratified estimator.
+
+---
+
+## Stage‑gated rollout (use existing RESULTS.md baselines)
+
+We already have **filtered SFT** and **RL** baselines in `tinker_cookbook/recipes/math_efficiency/RESULTS.md`. Use them as the reference point, and only run new expensive experiments after earlier stages pass.
+
+### Stage 0 — Paper plan only
+**Goal:** Lock design decisions and scope.  
+**Check:** doc review only; no code changes.
+
+### Stage 1 — Metadata plumbing only
+**Goal:** Add `strategy_id` + `context_transform` to the rollout data structures.  
+**Checks:** unit tests (no API) still pass.  
+**Command:** `pytest tinker_cookbook/tests/test_utils.py`
+
+### Stage 2 — Context swap in data processing
+**Goal:** Build Datums with training context swap, keeping sampled tokens/logprobs intact.  
+**Checks:** new unit tests in `test_rl_data_processing.py` pass.  
+**Command:** `pytest tinker_cookbook/tests/test_rl_data_processing.py`
+
+### Stage 3 — Stratified weighting (optional)
+**Goal:** Enable per‑strategy weighting without changing loss correctness.  
+**Checks:** unit test verifies `w_s / n_s` scaling.
+
+### Stage 4 — Recipe wiring (math_efficiency)
+**Goal:** Create multiple `EnvGroupBuilder`s per batch, each with its own strategy.  
+**Checks:** import‑level smoke check (no API).  
+**Command:** `python -c "from tinker_cookbook.recipes.math_efficiency.train_rl import CLIConfig; print(CLIConfig())"`
+
+### Stage 5 — End‑to‑end (requires API)
+**Goal:** Validate that ExIt improves over existing baselines in RESULTS.md.  
+**Checks:** smoke tests or tiny run; compare metrics to baselines.  
+**Command:** `pytest tinker_cookbook/tests/smoke_tests.py`
 
 ---
 

@@ -4,7 +4,8 @@ Basic interfaces and types for reinforcement learning.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Sequence, TypeAlias
+from enum import Enum
+from typing import Callable, Sequence, TypeAlias
 
 import chz
 import tinker
@@ -16,6 +17,10 @@ Observation: TypeAlias = tinker.ModelInput
 Logprobs: TypeAlias = list[float]
 Metrics: TypeAlias = dict[str, float | int]
 Logs: TypeAlias = dict[str, str | int | float]
+
+
+class StrategyId(Enum):
+    """Base enum for strategy identifiers."""
 
 
 @dataclass
@@ -98,6 +103,10 @@ class EnvGroupBuilder(ABC):
     - As a part of the *algorithm* (e.g. GRPO), when dealing with single-agent tasks.
     """
 
+    # Optional strategy metadata (always present on the base class).
+    strategy_id: StrategyId | None = None
+    context_transform: Callable[[Observation, int], Observation] | None = None
+
     @abstractmethod
     async def make_envs(self) -> Sequence[Env]:
         pass
@@ -136,6 +145,8 @@ class TrajectoryGroup:
     trajectories_G: list[Trajectory]
     final_rewards_G: list[float]  # computed by the EnvGroupBuilder, looking at whole group
     metrics_G: list[Metrics]
+    strategy_id: StrategyId | None = None
+    context_transform: Callable[[Observation, int], Observation] | None = None
 
     def get_total_rewards(self) -> list[float]:
         """

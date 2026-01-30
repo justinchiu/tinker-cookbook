@@ -200,3 +200,17 @@ uv run python -m tinker_cookbook.recipes.math_efficiency.train_rl \
     log_path="/tmp/math_efficiency_rl" \
     behavior_if_log_dir_exists="delete"
 ```
+
+### Learning curves (accuracy/cost vs steps)
+Use the per‑checkpoint evaluator to build a learning curve JSONL.
+
+```bash
+uv run python -m tinker_cookbook.recipes.math_efficiency.learning_curve \
+    log_path="/tmp/math_efficiency_rl" \
+    model_name="Qwen/Qwen3-8B" \
+    eval_num_problems=50 \
+    eval_samples_per_problem=4 \
+    checkpoint_stride=2
+```
+
+This writes `learning_curve.jsonl` under the run `log_path` with step, accuracy, token metrics, and cumulative training tokens/time.

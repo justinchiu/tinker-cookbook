@@ -23,6 +23,8 @@ from tinker.types import LossFnType
 from tinker_cookbook import cli_utils, model_info
 from tinker_cookbook.recipes.math_efficiency.efficient_env import (
     EfficientGsm8kDatasetBuilder,
+    ExItStrategy,
+    ExItStrategyConfig,
 )
 from tinker_cookbook.recipes.math_efficiency.eval import (
     print_results_table,
@@ -70,6 +72,8 @@ class CLIConfig:
     # Sampling parameters
     max_tokens: int = 4096
     temperature: float = 1.0
+    prompt_aug_system: str | None = None
+    answer_hint_strategy: bool = False
 
     # No KL penalty for hard problems (per compute-optimal scaling)
     kl_penalty_coef: float = 0.0
@@ -141,6 +145,51 @@ async def cli_main(cli_config: CLIConfig):
     wandb_name = cli_config.wandb_name or run_name
 
     # Create dataset builder
+    strategy_configs = None
+    if cli_config.prompt_aug_system is not None:
+        base_prefix: list[dict[str, str]] = []
+        aug_prefix = base_prefix + [
+            {"role": "system", "content": cli_config.prompt_aug_system}
+        ]
+        strategy_configs = [
+            ExItStrategyConfig(
+                strategy_id=ExItStrategy.IID,
+                sampling_prefix=base_prefix,
+                training_prefix=base_prefix,
+            ),
+            *(
+                [
+                    ExItStrategyConfig(
+                        strategy_id=ExItStrategy.ANSWER_HINT,
+                        sampling_prefix=base_prefix,
+                        training_prefix=base_prefix,
+                    )
+                ]
+                if cli_config.answer_hint_strategy
+                else []
+            ),
+            ExItStrategyConfig(
+                strategy_id=ExItStrategy.PROMPT_AUG,
+                sampling_prefix=aug_prefix,
+                training_prefix=base_prefix,
+            ),
+        ]
+        logger.info("Using ExIt prompt augmentation strategy")
+    elif cli_config.answer_hint_strategy:
+        base_prefix = []
+        strategy_configs = [
+            ExItStrategyConfig(
+                strategy_id=ExItStrategy.IID,
+                sampling_prefix=base_prefix,
+                training_prefix=base_prefix,
+            ),
+            ExItStrategyConfig(
+                strategy_id=ExItStrategy.ANSWER_HINT,
+                sampling_prefix=base_prefix,
+                training_prefix=base_prefix,
+            ),
+        ]
+        logger.info("Using ExIt answer-hint strategy")
     dataset_builder = EfficientGsm8kDatasetBuilder(
         batch_size=cli_config.groups_per_batch,
         model_name_for_tokenizer=cli_config.model_name,
@@ -150,6 +199,7 @@ async def cli_main(cli_config: CLIConfig):
         seed=cli_config.seed,
         n_epochs=cli_config.n_epochs,
         max_tokens=cli_config.max_tokens,
+        strategy_configs=strategy_configs,
     )
 
     # Create streaming config if requested

@@ -7,12 +7,12 @@ and assembling training batches.
 
 import logging
 from dataclasses import dataclass, field
-from typing import List
+from typing import Callable, List
 
 import tinker
 import torch
 from tinker import TensorData
-from tinker_cookbook.rl.types import Trajectory, TrajectoryGroup
+from tinker_cookbook.rl.types import StrategyId, Trajectory, TrajectoryGroup
 from tinker_cookbook.supervised.common import (
     create_rightshifted_model_input_and_leftshifted_targets,
 )
@@ -114,7 +114,11 @@ class SequenceAccumulator:
         self.mask = []
 
 
-def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.Datum]:
+def trajectory_to_data(
+    traj: Trajectory,
+    traj_advantage: float,
+    context_transform: Callable[[tinker.ModelInput, int], tinker.ModelInput] | None = None,
+) -> list[tinker.Datum]:
     """
     Return one or more Datum objects corresponding to the trajectory.
     If the sequence grows by appending, i.e., each successive observation contains
@@ -161,8 +165,10 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
         )
 
     data: list[tinker.Datum] = []
-    for transition in traj.transitions:
+    for i_transition, transition in enumerate(traj.transitions):
         ob = transition.ob
+        if context_transform is not None:
+            ob = context_transform(ob, i_transition)
         ob_flat = _flatten_chunks(ob.chunks)
         ac_with_logprobs = transition.ac
         if len(acc.full_sequence) == 0:
@@ -193,19 +199,46 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
 def assemble_training_data(
     trajectory_groups_P: List[TrajectoryGroup],
     advantages_P: List[torch.Tensor],
+    strategy_weights: dict[StrategyId, float] | None = None,
 ) -> tuple[List[tinker.Datum], List[dict[str, int]]]:
     """Convert trajectories to training data format."""
     data_D: list[tinker.Datum] = []
     metadata_D: list[dict[str, int]] = []
 
+    strategy_counts: dict[StrategyId, int] = {}
+    if strategy_weights is not None:
+        for traj_group in trajectory_groups_P:
+            if traj_group.strategy_id is None:
+                raise ValueError("strategy_weights provided but strategy_id is missing")
+            strategy_counts[traj_group.strategy_id] = strategy_counts.get(
+                traj_group.strategy_id, 0
+            ) + len(traj_group.trajectories_G)
+        missing = [sid for sid in strategy_counts if sid not in strategy_weights]
+        if missing:
+            raise ValueError(f"strategy_weights missing entries for: {missing}")
+        unused = [sid for sid in strategy_weights if sid not in strategy_counts]
+        if unused:
+            logger.warning("strategy_weights contains unused entries: %s", unused)
+
     for i_group, (traj_group, advantages_G) in enumerate(
         safezip(trajectory_groups_P, advantages_P)
     ):
+        weight_scale = 1.0
+        if strategy_weights is not None:
+            assert traj_group.strategy_id is not None
+            weight_scale = (
+                strategy_weights[traj_group.strategy_id]
+                / strategy_counts[traj_group.strategy_id]
+            )
         for i_traj, (traj, traj_advantage) in enumerate(
             safezip(traj_group.trajectories_G, advantages_G)
         ):
             # Build the full sequence from the trajectory
-            new_data = trajectory_to_data(traj, float(traj_advantage))
+            new_data = trajectory_to_data(
+                traj,
+                float(traj_advantage) * weight_scale,
+                context_transform=traj_group.context_transform,
+            )
             data_D.extend(new_data)
             metadata_D.extend([dict(group_idx=i_group, traj_idx=i_traj) for _ in new_data])
 

@@ -112,4 +112,12 @@ async def do_group_rollout(
                     pre=True,
                 )
 
-    return TrajectoryGroup(trajectories_G, list(rewards_G), list(metrics_G))
+    strategy_id = env_group_builder.strategy_id
+    context_transform = env_group_builder.context_transform
+    return TrajectoryGroup(
+        trajectories_G=trajectories_G,
+        final_rewards_G=list(rewards_G),
+        metrics_G=list(metrics_G),
+        strategy_id=strategy_id,
+        context_transform=context_transform,
+    )

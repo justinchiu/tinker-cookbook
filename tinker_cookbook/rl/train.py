@@ -38,6 +38,7 @@ from tinker_cookbook.rl.types import (
     EnvGroupBuilder,
     RLDataset,
     RLDatasetBuilder,
+    StrategyId,
     TrajectoryGroup,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
@@ -122,13 +123,19 @@ def print_group(traj_group: TrajectoryGroup, tokenizer: Tokenizer):
             trajectories_G=[traj_group.trajectories_G[i] for i in inds],
             final_rewards_G=[traj_group.final_rewards_G[i] for i in inds],
             metrics_G=[traj_group.metrics_G[i] for i in inds],
+            strategy_id=traj_group.strategy_id,
+            context_transform=traj_group.context_transform,
         )
 
     rewards = traj_group.get_total_rewards()
     # Compute both raw and normalized advantages for logging
     advantages_raw = compute_advantages([traj_group], normalize_advantages=False)[0]
     advantages_norm = compute_advantages([traj_group], normalize_advantages=True)[0]
-    data_D, metadata_D = assemble_training_data([traj_group], [advantages_norm])
+    data_D, metadata_D = assemble_training_data(
+        [traj_group],
+        [advantages_norm],
+        strategy_weights=None,
+    )
 
     buf = io.StringIO()
 
@@ -300,6 +307,7 @@ class Config:
     eval_every: int = 20  # 0 = disabled
     save_every: int = 20  # 0 = disabled
     load_checkpoint_path: str | None = None
+    strategy_weights: dict[StrategyId, float] | None = None
 
     async_config: AsyncConfig | None = None
     stream_minibatch_config: StreamMinibatchConfig | None = None
@@ -757,6 +765,7 @@ async def prepare_minibatch(
     kl_penalty_coef: float,
     kl_discount_factor: float,
     normalize_advantages: bool = False,
+    strategy_weights: dict[StrategyId, float] | None = None,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
 
@@ -772,7 +781,11 @@ async def prepare_minibatch(
     # Assemble training data
     with timed("assemble_training_data", metrics):
         advantages_P = compute_advantages(trajectory_groups_P, normalize_advantages)
-        data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
+        data_D, _metadata_D = assemble_training_data(
+            trajectory_groups_P,
+            advantages_P,
+            strategy_weights=strategy_weights,
+        )
 
     # Incorporate KL penalty if configured
     if kl_penalty_coef > 0:
@@ -897,6 +910,7 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
                 normalize_advantages=cfg.normalize_advantages,
+                strategy_weights=cfg.strategy_weights,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -980,6 +994,7 @@ async def do_train_step_and_get_sampling_client(
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
         normalize_advantages=cfg.normalize_advantages,
+        strategy_weights=cfg.strategy_weights,
     )
     metrics.update(prepare_minibatch_metrics)
 
