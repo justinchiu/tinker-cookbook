@@ -34,6 +34,7 @@ RL_LEARNING_RATE=5e-5
 RL_NUM_EPOCHS=15
 # 128 problems / 32 groups_per_batch = 4 batches per epoch -> 3 epochs = 12 steps
 RL_SAVE_EVERY=10
+RL_GROUP_SIZE_X2=16
 
 # Output directories
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -142,9 +143,35 @@ train_rl_answer() {
     cp "${rl_log_path}/eval_results.json" "${RESULTS_DIR}/method2_answer_hint_eval.json" 2>/dev/null || true
 }
 
+train_rl_x2() {
+    local rl_log_path="${CHECKPOINTS_DIR}/rl_x2"
+    local wandb_name="rl-${NUM_PROBLEMS}p-${RL_NUM_EPOCHS}ep-${RL_GROUP_SIZE_X2}x${RL_GROUPS_PER_BATCH}-lr${RL_LEARNING_RATE}-${TIMESTAMP}"
+
+    uv run python -m tinker_cookbook.recipes.math_efficiency.train_rl \
+        model_name="${MODEL_NAME}" \
+        num_problems=${NUM_PROBLEMS} \
+        n_epochs=${RL_NUM_EPOCHS} \
+        group_size=${RL_GROUP_SIZE_X2} \
+        groups_per_batch=${RL_GROUPS_PER_BATCH} \
+        learning_rate=${RL_LEARNING_RATE} \
+        lora_rank=${LORA_RANK} \
+        max_tokens=${MAX_TOKENS} \
+        temperature=${TEMPERATURE} \
+        log_path="${rl_log_path}" \
+        wandb_project="${WANDB_PROJECT}" \
+        wandb_name="${wandb_name}" \
+        eval_num_problems=${NUM_PROBLEMS} \
+        eval_samples_per_problem=${SAMPLES_PER_PROBLEM} \
+        save_every=${RL_SAVE_EVERY} \
+        behavior_if_log_dir_exists="delete"
+
+    cp "${rl_log_path}/eval_results.json" "${RESULTS_DIR}/method2_rl_x2_eval.json" 2>/dev/null || true
+}
+
 run_all() {
     eval_baseline
     train_sft
     train_rl
     train_rl_answer
+    train_rl_x2
 }
