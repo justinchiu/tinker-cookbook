@@ -7,6 +7,7 @@ Training Qwen3-8B to solve GSM-8K problems with fewer reasoning tokens while mai
 - **Timeout handling**: Timeouts count as 0% pass rate (not excluded)
 - **Dataset**: 100 fixed problems from GSM-8K train set
 - **Samples per problem**: 4 (evaluation)
+  - New RL learning-curve runs below use **128 problems** (4 batches/epoch).
 
 ## Wandb Project
 https://wandb.ai/percepta-ai/math-efficiency-interview
@@ -146,6 +147,28 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 **Follow-up run with 128 problems:**
 - **Run:** [rl-overfit-128prob-50ep-lr5e5](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/mo60meo8)
 - More problems may help prevent collapse through better generalization
+
+## RL Learning Curves (128 problems, lr=5e-5)
+
+These curves were produced by `learning_curve.py` on the latest 128‑problem runs.
+
+### RL (IID only)
+**Run:** https://wandb.ai/percepta-ai/math-efficiency-interview/runs/noq0uw46
+
+| Step | Accuracy | Mean Tokens | Thinking Tokens | Efficiency | Train Time (s) |
+|------|----------|-------------|-----------------|------------|----------------|
+| 10 | 97.656% | 954.4 | 661.1 | 0.102 | 1313.0 |
+| 20 | 97.266% | 174.4 | 164.3 | 0.558 | 2156.0 |
+| 30 | 83.789% | 45.3 | 35.1 | 1.852 | 2652.6 |
+| 40 | 70.312% | 30.8 | 20.6 | 2.285 | 2934.9 |
+
+### RL (IID + Answer‑Hint)
+**Run:** https://wandb.ai/percepta-ai/math-efficiency-interview/runs/sa0lu8vx
+
+| Step | Accuracy | Mean Tokens | Thinking Tokens | Efficiency | Train Time (s) |
+|------|----------|-------------|-----------------|------------|----------------|
+| 10 | 97.656% | 1177.1 | 865.7 | 0.083 | 1614.2 |
+| 20 | 98.242% | 624.8 | 425.9 | 0.157 | 2509.4 |
 
 ## Key Findings
 
