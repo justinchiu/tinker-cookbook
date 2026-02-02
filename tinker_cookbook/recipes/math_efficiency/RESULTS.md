@@ -41,6 +41,9 @@ https://wandb.ai/percepta-ai/math-efficiency-interview
 | 20 | 97.266% | 174.4 | 164.3 | 0.558 |
 | 30 | 83.789% | 45.2 | 35.1 | 1.852 |
 | 40 | 70.312% | 30.8 | 20.6 | 2.285 |
+| 50 | 62.109% | 25.3 | 14.9 | 2.459 |
+| 60 | 70.898% | 25.1 | 14.9 | 2.829 |
+| final | 70.508% | 25.1 | 14.9 | 2.807 |
 
 ## 3. IID RL (group_size=16, groups_per_batch=32)
 **Run:** [rl-128p-15ep-16x32-lr5e-5-20260130_221615](https://wandb.ai/percepta-ai/math-efficiency-interview/runs/933qr4xa)
