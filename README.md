@@ -53,10 +53,11 @@ Besides these primitives, we also offer **Tinker Cookbook** (a.k.a. this repo), 
 We also include a wide range of more sophisticated examples in the [`tinker_cookbook/recipes/`](tinker_cookbook/recipes/) folder:
 1. **[Chat supervised learning](tinker_cookbook/recipes/chat_sl/)**: supervised fine-tuning on conversational datasets like Tulu3.
 2. **[Math reasoning](tinker_cookbook/recipes/math_rl/)**: improve LLM reasoning capability by rewarding it for answering math questions correctly.
-3. **[Preference learning](tinker_cookbook/recipes/preference/)**: showcase a three-stage RLHF pipeline: 1) supervised fine-tuning, 2) learning a reward model, 3) RL against the reward model.
-4. **[Tool use](tinker_cookbook/recipes/search_tool/)**: train LLMs to better use retrieval tools to answer questions more accurately.
-5. **[Prompt distillation](tinker_cookbook/recipes/prompt_distillation/)**: internalize long and complex instructions into LLMs.
-6. **[Multi-Agent](tinker_cookbook/recipes/multiplayer_rl/)**: optimize LLMs to play against another LLM or themselves.
+3. **[Math efficiency](tinker_cookbook/recipes/math_efficiency/)**: shorten correct solutions using an efficiency reward. Reward is defined in `tinker_cookbook/recipes/math_efficiency/efficient_env.py`: if correct, reward = max_tokens − num_tokens; if incorrect, reward = 0.
+4. **[Preference learning](tinker_cookbook/recipes/preference/)**: showcase a three-stage RLHF pipeline: 1) supervised fine-tuning, 2) learning a reward model, 3) RL against the reward model.
+5. **[Tool use](tinker_cookbook/recipes/search_tool/)**: train LLMs to better use retrieval tools to answer questions more accurately.
+6. **[Prompt distillation](tinker_cookbook/recipes/prompt_distillation/)**: internalize long and complex instructions into LLMs.
+7. **[Multi-Agent](tinker_cookbook/recipes/multiplayer_rl/)**: optimize LLMs to play against another LLM or themselves.
 
 These examples are located in each subfolder, and their `README.md` files will walk you through the key implementation details, the commands to run them, and the expected performance.
 
