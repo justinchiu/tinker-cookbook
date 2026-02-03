@@ -12,6 +12,7 @@ Based on compute-optimal RL scaling recommendations:
 """
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
@@ -30,7 +31,13 @@ from tinker_cookbook.recipes.math_efficiency.eval import (
     print_results_table,
     run_evaluation,
 )
-from tinker_cookbook.rl.train import Config, StreamMinibatchConfig, main
+from tinker_cookbook.rl.train import (
+    CheckpointEvalConfig,
+    CheckpointEvalRequest,
+    Config,
+    StreamMinibatchConfig,
+    main,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +99,8 @@ class CLIConfig:
 
     # Checkpointing
     save_every: int = 10
+    run_checkpoint_eval: bool = False
+    checkpoint_eval_max_concurrency: int = 1
 
     # Service configuration
     base_url: str | None = None
@@ -143,6 +152,55 @@ async def cli_main(cli_config: CLIConfig):
         log_path = f"/tmp/tinker-examples/math_efficiency_rl/{run_name}"
 
     wandb_name = cli_config.wandb_name or run_name
+
+    checkpoint_eval_config = None
+    if cli_config.run_checkpoint_eval:
+        eval_output_path = os.path.join(log_path, "learning_curve.jsonl")
+        eval_lock = asyncio.Lock()
+
+        async def checkpoint_eval_callback(
+            request: CheckpointEvalRequest,
+        ) -> dict[str, float]:
+            eval_results = await run_evaluation(
+                model_name=cli_config.model_name,
+                checkpoint_path=request.sampler_path,
+                num_problems=cli_config.eval_num_problems,
+                samples_per_problem=cli_config.eval_samples_per_problem,
+                max_tokens=cli_config.max_tokens,
+                temperature=cli_config.temperature,
+                base_url=cli_config.base_url,
+                renderer_name=renderer_name,
+            )
+
+            record = {
+                "checkpoint_name": request.checkpoint_name,
+                "checkpoint_step": request.step,
+                "sampler_path": request.sampler_path,
+                "accuracy": eval_results.accuracy,
+                "mean_tokens": eval_results.mean_tokens,
+                "mean_thinking_tokens": eval_results.mean_thinking_tokens,
+                "efficiency": eval_results.efficiency,
+                "train_tokens_cum": None,
+                "train_time_cum": None,
+            }
+
+            async with eval_lock:
+                with open(eval_output_path, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+
+            return {
+                "accuracy": float(eval_results.accuracy),
+                "mean_tokens": float(eval_results.mean_tokens),
+                "mean_thinking_tokens": float(eval_results.mean_thinking_tokens),
+                "efficiency": float(eval_results.efficiency),
+            }
+
+        checkpoint_eval_config = CheckpointEvalConfig(
+            callback=checkpoint_eval_callback,
+            max_concurrency=cli_config.checkpoint_eval_max_concurrency,
+            log_prefix="checkpoint_eval",
+        )
+        logger.info("Checkpoint eval enabled: writing %s", eval_output_path)
 
     # Create dataset builder
     strategy_configs = None
@@ -228,6 +286,7 @@ async def cli_main(cli_config: CLIConfig):
         num_substeps=cli_config.num_substeps,
         eval_every=cli_config.eval_every,
         save_every=cli_config.save_every,
+        checkpoint_eval_config=checkpoint_eval_config,
         loss_fn=cli_config.loss_fn,
         loss_fn_config=cli_config.loss_fn_config,
         stream_minibatch_config=stream_minibatch_config,

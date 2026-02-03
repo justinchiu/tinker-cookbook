@@ -8,7 +8,8 @@ import logging
 import os
 import time
 from contextlib import contextmanager
-from typing import Any, Callable, Coroutine, Iterable, Iterator, List, Sequence, TypeVar
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Coroutine, Iterable, Iterator, List, Sequence, TypeVar
 
 import chz
 import numpy as np
@@ -272,6 +273,26 @@ class AsyncConfig:
     groups_per_batch: int
 
 
+@dataclass(frozen=True)
+class CheckpointEvalRequest:
+    checkpoint_name: str
+    step: int
+    sampler_path: str
+    log_path: str
+
+
+CheckpointEvalCallback = Callable[[CheckpointEvalRequest], Awaitable[dict[str, float] | None]]
+
+
+@chz.chz
+class CheckpointEvalConfig:
+    """Configuration for asynchronous checkpoint evaluation."""
+
+    callback: CheckpointEvalCallback
+    max_concurrency: int = 1
+    log_prefix: str = "checkpoint_eval"
+
+
 @chz.chz
 class Config:
     learning_rate: float
@@ -306,6 +327,7 @@ class Config:
     normalize_advantages: bool = False  # If True, standardize advantages (mean=0, std=1)
     eval_every: int = 20  # 0 = disabled
     save_every: int = 20  # 0 = disabled
+    checkpoint_eval_config: CheckpointEvalConfig | None = None
     load_checkpoint_path: str | None = None
     strategy_weights: dict[StrategyId, float] | None = None
 
@@ -314,6 +336,84 @@ class Config:
 
     # Logtree configuration
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
+
+
+class CheckpointEvalManager:
+    def __init__(self, config: CheckpointEvalConfig, ml_logger: ml_log.Logger) -> None:
+        if config.max_concurrency < 1:
+            raise ValueError("checkpoint_eval_config.max_concurrency must be >= 1")
+        self._config = config
+        self._ml_logger = ml_logger
+        self._queue: asyncio.Queue[CheckpointEvalRequest | None] = asyncio.Queue()
+        self._results: asyncio.Queue[tuple[CheckpointEvalRequest, dict[str, float]]] = (
+            asyncio.Queue()
+        )
+        self._tasks: list[asyncio.Task[None]] = []
+        self._closed = False
+
+    async def start(self) -> None:
+        if self._tasks:
+            return
+        for i in range(self._config.max_concurrency):
+            self._tasks.append(
+                asyncio.create_task(
+                    self._worker(i),
+                    name=f"checkpoint_eval_worker_{i}",
+                )
+            )
+
+    def enqueue(self, request: CheckpointEvalRequest) -> None:
+        if self._closed:
+            logger.warning("CheckpointEvalManager is closed; dropping %s", request.checkpoint_name)
+            return
+        self._queue.put_nowait(request)
+
+    def log_pending(self) -> None:
+        while True:
+            try:
+                request, metrics = self._results.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            prefixed: dict[str, float] = {}
+            for key, value in metrics.items():
+                try:
+                    prefixed[f"{self._config.log_prefix}/{key}"] = float(value)
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "Skipping non-numeric checkpoint eval metric %s=%r", key, value
+                    )
+            if prefixed:
+                self._ml_logger.log_metrics(prefixed, step=request.step)
+
+    async def flush(self) -> None:
+        await self._queue.join()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for _ in self._tasks:
+            self._queue.put_nowait(None)
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+    async def _worker(self, worker_id: int) -> None:
+        while True:
+            request = await self._queue.get()
+            if request is None:
+                self._queue.task_done()
+                return
+            try:
+                metrics = await self._config.callback(request)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Checkpoint eval failed for %s (worker %d)",
+                    request.checkpoint_name,
+                    worker_id,
+                )
+                metrics = None
+            if metrics:
+                await self._results.put((request, metrics))
+            self._queue.task_done()
 
 
 @scope
@@ -371,6 +471,7 @@ async def do_sync_training_with_stream_minibatch(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ):
     """
     Implements fully synchronous on-policy training with minibatch streaming.
@@ -380,7 +481,12 @@ async def do_sync_training_with_stream_minibatch(
     """
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch
+        training_client,
+        start_batch,
+        cfg.log_path,
+        cfg.save_every,
+        start_batch,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -456,12 +562,15 @@ async def do_sync_training_with_stream_minibatch(
                 training_client,
                 service_client,
                 tokenizer,
+                checkpoint_eval_manager=checkpoint_eval_manager,
             )
 
         # Log metrics
         metrics.update(full_batch_metrics)
         metrics["time/total"] = time.time() - t_start
         ml_logger.log_metrics(metrics, step=i_batch)
+        if checkpoint_eval_manager is not None:
+            checkpoint_eval_manager.log_pending()
 
 
 @chz.chz
@@ -493,6 +602,7 @@ async def do_async_training(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ):
     """Implements async off-policy training, capped at K steps off policy."""
     assert cfg.async_config is not None
@@ -632,6 +742,7 @@ async def do_async_training(
                     service_client,
                     tokenizer,
                     filter_stale_trajectory_group,
+                    checkpoint_eval_manager=checkpoint_eval_manager,
                 )
             else:
                 if not filter_stale_trajectory_group(wrapped_trajectory_group):
@@ -661,6 +772,7 @@ async def do_async_training(
                     tokenizer,
                     [g.env_group_builder for g in wrapped_trajectory_groups],
                     [g.trajectory_group for g in wrapped_trajectory_groups],
+                    checkpoint_eval_manager=checkpoint_eval_manager,
                 )
             sampling_client_step = i_batch + 1
             sampling_client_updated_event.set()
@@ -669,6 +781,8 @@ async def do_async_training(
             metrics.update(train_step_metrics)
             metrics["time/training_loop/total"] = time.time() - t_start
             ml_logger.log_metrics(metrics, step=i_batch)
+            if checkpoint_eval_manager is not None:
+                checkpoint_eval_manager.log_pending()
             i_batch += 1
             wrapped_trajectory_groups = []
 
@@ -739,17 +853,28 @@ async def save_checkpoint_and_get_sampling_client(
     log_path: str,
     save_every: int,
     start_batch: int = 0,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     metrics = {}
     with timed("save_checkpoint", metrics):
         if save_every > 0 and i_batch > start_batch and i_batch % save_every == 0:
+            checkpoint_name = f"{i_batch:06d}"
             path_dict = await checkpoint_utils.save_checkpoint_async(
                 training_client=training_client,
-                name=f"{i_batch:06d}",
+                name=checkpoint_name,
                 log_path=log_path,
                 loop_state={"batch": i_batch},
                 kind="both",
             )
+            if checkpoint_eval_manager is not None:
+                checkpoint_eval_manager.enqueue(
+                    CheckpointEvalRequest(
+                        checkpoint_name=checkpoint_name,
+                        step=i_batch,
+                        sampler_path=path_dict["sampler_path"],
+                        log_path=log_path,
+                    )
+                )
             return training_client.create_sampling_client(path_dict["sampler_path"]), metrics
         else:
             return await training_client.save_weights_and_get_sampling_client_async(), metrics
@@ -811,6 +936,7 @@ async def compute_full_batch_metrics_and_get_sampling_client(
     log_path: str,
     save_every: int,
     do_compute_post_kl: bool,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     At the end of the iteration, this will compute metrics for the full batch
@@ -828,7 +954,11 @@ async def compute_full_batch_metrics_and_get_sampling_client(
 
     # Get a sampling client using the new weights
     sampling_client, checkpoint_metrics = await save_checkpoint_and_get_sampling_client(
-        training_client, i_batch, log_path, save_every
+        training_client,
+        i_batch,
+        log_path,
+        save_every,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
     metrics.update(checkpoint_metrics)
 
@@ -850,6 +980,7 @@ async def do_train_step_streaming_and_get_sampling_client(
     service_client: tinker.ServiceClient,
     tokenizer: Tokenizer,
     trajectory_group_filter: Callable[[WrappedTrajectoryGroup | None], bool] = lambda _: True,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     """
     As soon as we have enough trajectories for a minibatch, we will train on them.
@@ -967,6 +1098,7 @@ async def do_train_step_streaming_and_get_sampling_client(
         cfg.log_path,
         cfg.save_every,
         cfg.compute_post_kl,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
     metrics.update(full_batch_metrics)
     return sampling_client, metrics
@@ -981,6 +1113,7 @@ async def do_train_step_and_get_sampling_client(
     tokenizer: Tokenizer,
     env_group_builders_P: Sequence[EnvGroupBuilder],
     trajectory_groups_P: list[TrajectoryGroup],
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ) -> tuple[tinker.SamplingClient, dict[str, Any]]:
     update_scope_context({"step": i_batch})
 
@@ -1018,6 +1151,7 @@ async def do_train_step_and_get_sampling_client(
         cfg.log_path,
         cfg.save_every,
         cfg.compute_post_kl,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
     metrics.update(full_batch_metrics)
 
@@ -1036,11 +1170,17 @@ async def do_sync_training(
     dataset: RLDataset,
     ml_logger: ml_log.Logger,
     tokenizer: Tokenizer,
+    checkpoint_eval_manager: CheckpointEvalManager | None = None,
 ):
     """Implements fully synchronous on-policy training"""
     # Initial sampling client
     sampling_client, _ = await save_checkpoint_and_get_sampling_client(
-        training_client, start_batch, cfg.log_path, cfg.save_every, start_batch
+        training_client,
+        start_batch,
+        cfg.log_path,
+        cfg.save_every,
+        start_batch,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
 
     for i_batch in range(start_batch, end_batch):
@@ -1098,12 +1238,15 @@ async def do_sync_training(
             tokenizer,
             env_group_builders_P,
             trajectory_groups_P,
+            checkpoint_eval_manager=checkpoint_eval_manager,
         )
 
         # Log metrics
         metrics.update(train_step_metrics)
         metrics["time/total"] = time.time() - t_start
         ml_logger.log_metrics(metrics, step=i_batch)
+        if checkpoint_eval_manager is not None:
+            checkpoint_eval_manager.log_pending()
 
 
 @scope
@@ -1117,6 +1260,10 @@ async def main(
         config=cfg,
         wandb_name=cfg.wandb_name,
     )
+    checkpoint_eval_manager: CheckpointEvalManager | None = None
+    if cfg.checkpoint_eval_config is not None:
+        checkpoint_eval_manager = CheckpointEvalManager(cfg.checkpoint_eval_config, ml_logger)
+        await checkpoint_eval_manager.start()
     if cfg.enable_trace:
         # Get and rename the current (main) task
         current_task = asyncio.current_task()
@@ -1188,20 +1335,34 @@ async def main(
         dataset=dataset,
         ml_logger=ml_logger,
         tokenizer=tokenizer,
+        checkpoint_eval_manager=checkpoint_eval_manager,
     )
 
     # Save final checkpoint
     if start_batch < num_batches:
-        _ = await checkpoint_utils.save_checkpoint_async(
+        path_dict = await checkpoint_utils.save_checkpoint_async(
             training_client=training_client,
             name="final",
             log_path=cfg.log_path,
             kind="both",
             loop_state={"batch": num_batches},
         )
+        if checkpoint_eval_manager is not None:
+            checkpoint_eval_manager.enqueue(
+                CheckpointEvalRequest(
+                    checkpoint_name="final",
+                    step=num_batches,
+                    sampler_path=path_dict["sampler_path"],
+                    log_path=cfg.log_path,
+                )
+            )
     else:
         logger.info("Training was already complete; nothing to do")
 
     # Cleanup
+    if checkpoint_eval_manager is not None:
+        await checkpoint_eval_manager.flush()
+        checkpoint_eval_manager.log_pending()
+        await checkpoint_eval_manager.close()
     ml_logger.close()
     logger.info("Training completed successfully")
