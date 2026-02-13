@@ -197,7 +197,7 @@ async def async_main(config: train.Config):
 def main():
     cli_config = chz.entrypoint(CLIConfig)
     config, _epsilon_policy = build_config(cli_config)
-    cli_utils.check_log_dir(config.log_path, behavior_if_exists="ask")
+    cli_utils.check_log_dir(config.log_path, behavior_if_exists="delete")
     tau2_logging_config.setup_tau2_logging()
     asyncio.run(async_main(config))
 
