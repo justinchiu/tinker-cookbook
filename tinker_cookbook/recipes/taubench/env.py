@@ -149,9 +149,7 @@ class Tau2Env(Env):
         # Use upstream's create_conversation_prefix_with_tools to inject tool
         # definitions into the system prompt via the renderer's native format.
         tool_specs = _openai_tools_to_tool_specs(self.tools)
-        prefix_messages = renderer.create_conversation_prefix_with_tools(
-            tool_specs, system_prompt
-        )
+        prefix_messages = renderer.create_conversation_prefix_with_tools(tool_specs, system_prompt)
         system_prompt_with_tools = prefix_messages[0].get("content", system_prompt)
 
         # Initialize action parser
@@ -705,9 +703,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         TRAIN_SPLIT = "train"
         TEST_SPLIT = "test"
 
-        def load_tasks_for_domain(
-            domain_name: str, split_name: str | None
-        ) -> tuple[list, bool]:
+        def load_tasks_for_domain(domain_name: str, split_name: str | None) -> tuple[list, bool]:
             """Load tasks, returning (tasks, used_official_split)."""
             tasks_loader = reg.registry.get_tasks_loader(domain_name)
             if split_name is None:

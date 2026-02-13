@@ -51,9 +51,7 @@ def _inject_tools_into_messages(
 
     # Use upstream renderer's native tool injection
     tool_specs = _openai_tools_to_tool_specs(tools)
-    prefix_messages = renderer.create_conversation_prefix_with_tools(
-        tool_specs, system_prompt
-    )
+    prefix_messages = renderer.create_conversation_prefix_with_tools(tool_specs, system_prompt)
     system_with_tools = prefix_messages[0].get("content", system_prompt)
 
     # Replace or prepend system message
@@ -704,7 +702,9 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
                     # Normalize messages
                     normalized = _normalize_tau2_messages(messages)
                     # Inject tools and convert to Datum
-                    messages_with_tools = _inject_tools_into_messages(self.renderer, normalized, tools)
+                    messages_with_tools = _inject_tools_into_messages(
+                        self.renderer, normalized, tools
+                    )
                     model_input, weights = self.renderer.build_supervised_example(
                         messages_with_tools, train_on_what=train_on_what
                     )

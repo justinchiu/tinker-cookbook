@@ -164,9 +164,7 @@ class TestForcedAskSonnetPayload:
                 lambda _: mock_tokenizer,
             )
 
-            policy = EpsilonAskSonnetPolicy(
-                model_name="test", max_tokens=100
-            )
+            EpsilonAskSonnetPolicy(model_name="test", max_tokens=100)  # side effect: calls tokenizer.encode
 
         # Verify the template string uses "arguments", not "args"
         encoded_str = mock_tokenizer.encode.call_args[0][0]
@@ -230,9 +228,7 @@ class TestRLTestSetEvaluatorTemperature:
         from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
 
         sig = inspect.signature(RLTestSetEvaluator.__init__)
-        assert "temperature" in sig.parameters, (
-            "RLTestSetEvaluator should accept temperature"
-        )
+        assert "temperature" in sig.parameters, "RLTestSetEvaluator should accept temperature"
 
     def test_temperature_defaults_to_1(self):
         """Default temperature should be 1.0 for backwards compatibility."""
