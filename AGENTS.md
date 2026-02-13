@@ -145,6 +145,8 @@ For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in d
 3. Never write tests and code simultaneously — that skips the proof that tests catch regressions.
 4. For critical code paths, do mutation testing: break the code, verify the test fails.
 
+**Dependencies:** Use `uv add <package>` to add new dependencies (not `uv pip install`). This updates `pyproject.toml` so the dependency is declared for all users, not just installed locally.
+
 **GitHub PRs:** This repo is a fork of `thinking-machines-lab/tinker-cookbook`.
 - `origin` = `justinchiu/tinker-cookbook` (the fork)
 - `upstream` = `thinking-machines-lab/tinker-cookbook`

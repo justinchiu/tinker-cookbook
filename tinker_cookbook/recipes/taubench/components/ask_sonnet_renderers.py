@@ -18,6 +18,18 @@ _ASK_SONNET_INSTRUCTION_PATTERN = re.compile(
 )
 
 
+def _is_ask_sonnet_message(msg: dict) -> bool:
+    """Check if a message is an ask_sonnet call (content string or tool_calls format)."""
+    if "ask_sonnet" in msg.get("content", ""):
+        return True
+    for tc in msg.get("tool_calls", []):
+        func = tc.get("function", tc) if isinstance(tc, dict) else tc
+        name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
+        if name == "ask_sonnet":
+            return True
+    return False
+
+
 class AskSonnetRenderer(ABC):
     """
     Abstract base class for rendering ask_sonnet interactions.
@@ -37,10 +49,11 @@ class AskSonnetRenderer(ABC):
         clean_system_prompt = _ASK_SONNET_INSTRUCTION_PATTERN.sub("", base_system_prompt)
 
         # Remove final ask_sonnet turn if present
+        # Check both content string and tool_calls list (OpenAI-style format)
         messages_to_render = list(messages)
         if messages_to_render:
             last_msg = messages_to_render[-1]
-            if last_msg.get("role") == "assistant" and "ask_sonnet" in last_msg.get("content", ""):
+            if last_msg.get("role") == "assistant" and _is_ask_sonnet_message(last_msg):
                 messages_to_render = messages_to_render[:-1]
 
         result = []

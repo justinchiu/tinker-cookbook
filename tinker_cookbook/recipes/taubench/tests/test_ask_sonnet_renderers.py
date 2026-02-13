@@ -136,6 +136,23 @@ class TestRenderForAdvisor:
         assert result[-1]["role"] == "user"
         assert result[-1]["content"] == "help"
 
+    def test_removes_final_ask_sonnet_tool_calls_format(self, sample_tools):
+        """OpenAI-style: content is empty, ask_sonnet is in tool_calls list."""
+        r = self._make_renderer()
+        messages = [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": "help"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "ask_sonnet", "arguments": "{}"}}],
+            },
+        ]
+        result = r.render_for_advisor(messages, sample_tools, "sys prompt")
+        # Last message should be the user message, not the ask_sonnet assistant turn
+        assert result[-1]["role"] == "user"
+        assert result[-1]["content"] == "help"
+
     def test_tool_messages_become_user_messages(self, sample_tools):
         r = self._make_renderer()
         messages = [
