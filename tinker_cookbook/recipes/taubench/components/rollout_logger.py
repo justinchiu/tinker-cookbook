@@ -54,11 +54,17 @@ class RolloutLogger:
         is_success = reward > 0.5
 
         if is_success:
-            if self.max_success_per_iter > 0 and self._iter_success_count >= self.max_success_per_iter:
+            if (
+                self.max_success_per_iter > 0
+                and self._iter_success_count >= self.max_success_per_iter
+            ):
                 return None
             self._iter_success_count += 1
         else:
-            if self.max_failure_per_iter > 0 and self._iter_failure_count >= self.max_failure_per_iter:
+            if (
+                self.max_failure_per_iter > 0
+                and self._iter_failure_count >= self.max_failure_per_iter
+            ):
                 return None
             self._iter_failure_count += 1
 
@@ -68,7 +74,7 @@ class RolloutLogger:
         task_hash = hashlib.md5(task_id.encode()).hexdigest()[:8]
         filename = f"iter{self._current_iter:04d}_{status}_{domain}_{task_hash}_{timestamp}.json"
 
-        if not hasattr(self, 'rollout_path'):
+        if not hasattr(self, "rollout_path"):
             self.rollout_path = Path(self.log_dir) / self.subdir
         self.rollout_path.mkdir(parents=True, exist_ok=True)
 
@@ -80,7 +86,8 @@ class RolloutLogger:
                 if k == "tool_calls" and v:
                     result[k] = [
                         {"name": tc.function.name, "arguments": tc.function.arguments}
-                        if hasattr(tc, "function") else tc
+                        if hasattr(tc, "function")
+                        else tc
                         for tc in v
                     ]
                 else:

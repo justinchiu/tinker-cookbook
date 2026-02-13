@@ -13,16 +13,34 @@ logger = logging.getLogger(__name__)
 
 def is_retryable_error(exception: BaseException) -> bool:
     """Check if an exception is retryable."""
-    if isinstance(exception, (litellm.APIConnectionError, litellm.InternalServerError, litellm.RateLimitError, litellm.BadGatewayError, litellm.Timeout)):
+    if isinstance(
+        exception,
+        (
+            litellm.APIConnectionError,
+            litellm.InternalServerError,
+            litellm.RateLimitError,
+            litellm.BadGatewayError,
+            litellm.Timeout,
+        ),
+    ):
         return True
     error_str = str(exception).lower()
     if "credit balance" in error_str or "billing" in error_str:
         return True
-    if any(pattern in error_str for pattern in [
-        "503", "502", "service unavailable", "bad gateway",
-        "upstream connect error", "connection termination", "reset before headers",
-        "overloaded", "temporarily unavailable"
-    ]):
+    if any(
+        pattern in error_str
+        for pattern in [
+            "503",
+            "502",
+            "service unavailable",
+            "bad gateway",
+            "upstream connect error",
+            "connection termination",
+            "reset before headers",
+            "overloaded",
+            "temporarily unavailable",
+        ]
+    ):
         return True
     return False
 
@@ -30,6 +48,7 @@ def is_retryable_error(exception: BaseException) -> bool:
 @dataclass
 class LLMCallResult:
     """Result from an LLM call including content and token usage."""
+
     content: str
     input_tokens: int
     output_tokens: int
@@ -105,7 +124,7 @@ class ExternalLLMClient:
         for i, msg in enumerate(messages):
             print(f"\n--- Message {i} ---")
             print(f"  role: {msg.get('role')}")
-            content = msg.get('content', '')
+            content = msg.get("content", "")
             preview = repr(content[:200]) + "..." if len(content) > 200 else repr(content)
             print(f"  content: {preview}")
         print("=" * 80 + "\n")

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 _ASK_SONNET_INSTRUCTION_PATTERN = re.compile(
     r"\n\nIMPORTANT: You have access to a special tool called `ask_sonnet`.*?"
     r"for subsequent turns if needed\.",
-    re.DOTALL
+    re.DOTALL,
 )
 
 
@@ -49,17 +49,23 @@ class AskSonnetRenderer(ABC):
             role = msg.get("role", "")
 
             if role == "system":
-                result.append({
-                    "role": "system",
-                    "content": self._build_system_with_tools(clean_system_prompt, tools),
-                })
+                result.append(
+                    {
+                        "role": "system",
+                        "content": self._build_system_with_tools(clean_system_prompt, tools),
+                    }
+                )
 
             elif role == "tool":
                 content = msg.get("content", "")
-                result.append({
-                    "role": "user",
-                    "content": f"[Tool Result]: {content}" if content else "[Tool Result]: (empty)",
-                })
+                result.append(
+                    {
+                        "role": "user",
+                        "content": f"[Tool Result]: {content}"
+                        if content
+                        else "[Tool Result]: (empty)",
+                    }
+                )
 
             elif role == "assistant":
                 content = msg.get("content", "")
@@ -72,23 +78,29 @@ class AskSonnetRenderer(ABC):
                         parts.append(f"<tool_call>\n{tc_json}\n</tool_call>")
                     content = "\n".join(parts)
 
-                result.append({
-                    "role": "assistant",
-                    "content": content,
-                })
+                result.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
 
             elif role == "user":
-                result.append({
-                    "role": "user",
-                    "content": msg.get("content", ""),
-                })
+                result.append(
+                    {
+                        "role": "user",
+                        "content": msg.get("content", ""),
+                    }
+                )
 
             else:
                 logger.warning("Unknown message role: %s", role)
-                result.append({
-                    "role": role,
-                    "content": msg.get("content", ""),
-                })
+                result.append(
+                    {
+                        "role": role,
+                        "content": msg.get("content", ""),
+                    }
+                )
 
         return result
 
@@ -165,14 +177,12 @@ Do NOT respond with empty content. Always provide a response."""
 
     def _extract_action_from_content(self, content: str) -> str:
         tool_call_match = re.search(
-            r"<tool_call>\s*(\{.*?\})\s*</tool_call>",
-            content,
-            flags=re.DOTALL
+            r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, flags=re.DOTALL
         )
         if tool_call_match:
             return tool_call_match.group(1)
 
-        raw_json_match = re.match(r'^\s*(\{.*\})\s*$', content, flags=re.DOTALL)
+        raw_json_match = re.match(r"^\s*(\{.*\})\s*$", content, flags=re.DOTALL)
         if raw_json_match:
             try:
                 parsed = json.loads(raw_json_match.group(1))
@@ -181,12 +191,7 @@ Do NOT respond with empty content. Always provide a response."""
             except json.JSONDecodeError:
                 pass
 
-        return re.sub(
-            r"<tool_call>.*?</tool_call>",
-            "",
-            content,
-            flags=re.DOTALL
-        ).strip()
+        return re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL).strip()
 
 
 class ConditioningRenderer(AskSonnetRenderer):

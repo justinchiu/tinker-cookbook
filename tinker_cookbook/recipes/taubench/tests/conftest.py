@@ -34,9 +34,7 @@ def sample_tools():
                 "description": "Look up order details by order ID",
                 "parameters": {
                     "type": "object",
-                    "properties": {
-                        "order_id": {"type": "string", "description": "The order ID"}
-                    },
+                    "properties": {"order_id": {"type": "string", "description": "The order ID"}},
                     "required": ["order_id"],
                 },
             },

@@ -172,7 +172,11 @@ class TestRenderForAdvisor:
         # The tools section should include get_order_details but NOT ask_sonnet
         assert "get_order_details" in system_content
         # ask_sonnet should not appear in the Available Tools section
-        tools_section = system_content.split("# Available Tools")[-1] if "# Available Tools" in system_content else ""
+        tools_section = (
+            system_content.split("# Available Tools")[-1]
+            if "# Available Tools" in system_content
+            else ""
+        )
         assert "ask_sonnet" not in tools_section
 
     def test_assistant_tool_calls_rendered_as_text(self, sample_tools):

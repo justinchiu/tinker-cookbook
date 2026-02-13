@@ -187,9 +187,7 @@ class TestExternalLLMClient:
         """Non-retryable errors should propagate without retry."""
         client = self._make_client()
 
-        mock_acompletion = AsyncMock(
-            side_effect=ValueError("bad input - not retryable")
-        )
+        mock_acompletion = AsyncMock(side_effect=ValueError("bad input - not retryable"))
 
         with patch(
             "tinker_cookbook.recipes.taubench.components.external_llm.litellm.acompletion",

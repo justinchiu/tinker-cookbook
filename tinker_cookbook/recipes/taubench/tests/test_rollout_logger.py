@@ -66,14 +66,20 @@ class TestSamplingLimits:
 
     def test_zero_means_unlimited(self, tmp_path):
         """max_*_per_iter=0 means no limit. Verify with a limit=1 control to prove limits work."""
-        rl_limited = RolloutLogger(log_dir=str(tmp_path / "limited"), max_success_per_iter=1, max_failure_per_iter=1)
+        rl_limited = RolloutLogger(
+            log_dir=str(tmp_path / "limited"), max_success_per_iter=1, max_failure_per_iter=1
+        )
         rl_limited.start_iteration(0)
         assert rl_limited.log_episode("retail", "t1", reward=1.0, messages=[]) is not None
         assert rl_limited.log_episode("retail", "t2", reward=1.0, messages=[]) is None  # blocked
 
-        rl_unlimited = RolloutLogger(log_dir=str(tmp_path / "unlimited"), max_success_per_iter=0, max_failure_per_iter=0)
+        rl_unlimited = RolloutLogger(
+            log_dir=str(tmp_path / "unlimited"), max_success_per_iter=0, max_failure_per_iter=0
+        )
         rl_unlimited.start_iteration(0)
-        paths = [rl_unlimited.log_episode("retail", f"t{i}", reward=1.0, messages=[]) for i in range(10)]
+        paths = [
+            rl_unlimited.log_episode("retail", f"t{i}", reward=1.0, messages=[]) for i in range(10)
+        ]
         assert all(p is not None for p in paths)
 
     def test_start_iteration_resets_counters(self, tmp_path):
