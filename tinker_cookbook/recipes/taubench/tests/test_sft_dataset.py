@@ -164,8 +164,7 @@ class TestInjectAskSonnet:
             for m in result
             if m.get("tool_calls")
             and any(
-                (tc.function.name if hasattr(tc, "function") else tc.get("name"))
-                == "ask_sonnet"
+                (tc.function.name if hasattr(tc, "function") else tc.get("name")) == "ask_sonnet"
                 for tc in m["tool_calls"]
             )
         ]
@@ -228,9 +227,7 @@ class TestMarkTrainable:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    ToolCall(
-                        function=ToolCall.FunctionBody(name="ask_sonnet", arguments="{}")
-                    )
+                    ToolCall(function=ToolCall.FunctionBody(name="ask_sonnet", arguments="{}"))
                 ],
             }
         ]
@@ -256,9 +253,7 @@ class TestMarkTrainable:
                 "content": "",
                 "tool_calls": [
                     ToolCall(
-                        function=ToolCall.FunctionBody(
-                            name="get_order", arguments='{"id": "1"}'
-                        )
+                        function=ToolCall.FunctionBody(name="get_order", arguments='{"id": "1"}')
                     )
                 ],
             }
@@ -322,9 +317,7 @@ class TestGenerateAdvice:
             "content": "Let me check that for you.",
             "tool_calls": [
                 ToolCall(
-                    function=ToolCall.FunctionBody(
-                        name="lookup", arguments='{"query": "test"}'
-                    )
+                    function=ToolCall.FunctionBody(name="lookup", arguments='{"query": "test"}')
                 )
             ],
         }
@@ -337,9 +330,7 @@ class TestGenerateAdvice:
         msg = {
             "role": "assistant",
             "content": "",
-            "tool_calls": [
-                {"name": "get_order", "arguments": {"order_id": "123"}}
-            ],
+            "tool_calls": [{"name": "get_order", "arguments": {"order_id": "123"}}],
         }
         result = _generate_advice_for_action(msg)
         assert "<tool_call>" in result
@@ -417,9 +408,7 @@ class TestDynamicInjectionDataset:
 
         convs = [
             ConversationRecord(
-                messages=_make_messages(
-                    "system", "user", "assistant", "user", "assistant"
-                ),
+                messages=_make_messages("system", "user", "assistant", "user", "assistant"),
                 task_id=f"task_{i}",
                 domain="retail",
             )
@@ -473,9 +462,7 @@ class TestDynamicInjectionDataset:
 
         convs = [
             ConversationRecord(
-                messages=_make_messages(
-                    "system", "user", "assistant", "user", "assistant"
-                ),
+                messages=_make_messages("system", "user", "assistant", "user", "assistant"),
                 task_id="t1",
                 domain="retail",
             )
@@ -614,12 +601,8 @@ class TestSplitDatumsByTasks:
             "tinker_cookbook.recipes.taubench.sft_dataset._get_task_ids_for_split"
         ) as mock_split:
             mock_split.return_value = set()
-            train1, test1 = _split_datums_by_tasks(
-                datums, "retail", True, 0.3
-            )
-            train2, test2 = _split_datums_by_tasks(
-                datums, "retail", True, 0.3
-            )
+            train1, test1 = _split_datums_by_tasks(datums, "retail", True, 0.3)
+            train2, test2 = _split_datums_by_tasks(datums, "retail", True, 0.3)
 
         # Same input → same split (deterministic seed)
         assert len(train1) == len(train2)

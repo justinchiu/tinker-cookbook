@@ -860,7 +860,11 @@ class Renderer(ABC):
         return []
 
     def build_generation_prompt(
-        self, messages: list[Message], role: Role = "assistant", prefill: str | None = None
+        self,
+        messages: list[Message],
+        role: Role = "assistant",
+        prefill: str | None = None,
+        tools: list[dict] | None = None,
     ) -> tinker.ModelInput:
         """
         Generates tokens for sampling from the model.
@@ -930,6 +934,7 @@ class Renderer(ABC):
         self,
         messages: list[Message],
         train_on_what: TrainOnWhat = TrainOnWhat.LAST_ASSISTANT_MESSAGE,
+        tools: list[dict] | None = None,
     ) -> tuple[tinker.ModelInput, torch.Tensor]:
         """
         Build tokens and per-token weights for supervised fine-tuning.

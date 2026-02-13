@@ -18,7 +18,7 @@ from tinker.types import LossFnType
 from tqdm import tqdm
 
 from tinker_cookbook import checkpoint_utils
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
@@ -48,6 +48,10 @@ from tinker_cookbook.utils.trace import scope, trace_init, update_scope_context
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Type for custom policy factory functions.
+# Given a SamplingClient, returns a TokenCompleter (e.g., EpsilonAskSonnetPolicy).
+PolicyFactory = Callable[[tinker.SamplingClient], TokenCompleter]
 
 
 @chz.chz
@@ -324,6 +328,17 @@ class Config:
 
     # Logtree configuration
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
+
+    # Evaluation temperature (0.0 = greedy decoding for eval)
+    eval_temperature: float = 0.0
+
+    # Custom policy factory: given a SamplingClient, return a TokenCompleter.
+    # Used by taubench for epsilon-greedy exploration policies.
+    policy_factory: PolicyFactory | None = None
+
+    # Callback invoked after each training step. Receives the step index.
+    # Used by taubench for epsilon decay scheduling.
+    on_train_step: Callable[[int], None] | None = None
 
 
 @scope
