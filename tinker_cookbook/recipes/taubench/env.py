@@ -705,13 +705,18 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         TRAIN_SPLIT = "train"
         TEST_SPLIT = "test"
 
-        def load_tasks_for_domain(domain_name: str, split_name: str | None) -> list:
+        def load_tasks_for_domain(
+            domain_name: str, split_name: str | None
+        ) -> tuple[list, bool]:
+            """Load tasks, returning (tasks, used_official_split)."""
             tasks_loader = reg.registry.get_tasks_loader(domain_name)
             if split_name is None:
                 tasks = tasks_loader()
+                used_split = False
             else:
                 try:
                     tasks = tasks_loader(task_split_name=split_name)
+                    used_split = True
                 except TypeError:
                     logger.warning(
                         "Domain %s does not support split '%s'; using default",
@@ -719,6 +724,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
                         split_name,
                     )
                     tasks = tasks_loader()
+                    used_split = False
                 except ValueError as exc:
                     logger.warning(
                         "Domain %s missing split '%s' (%s); falling back",
@@ -727,10 +733,11 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
                         exc,
                     )
                     tasks = tasks_loader()
+                    used_split = False
 
             for task in tasks:
                 setattr(task, "_actual_domain", domain_name)
-            return tasks
+            return tasks, used_split
 
         if self.domain == "all":
             domains = ["telecom", "airline", "retail", "telecom-workflow"]
@@ -740,8 +747,28 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         train_tasks: list = []
         test_tasks: list = []
         for domain_name in domains:
-            train_tasks.extend(load_tasks_for_domain(domain_name, TRAIN_SPLIT))
-            test_tasks.extend(load_tasks_for_domain(domain_name, TEST_SPLIT))
+            raw_train, train_split_ok = load_tasks_for_domain(domain_name, TRAIN_SPLIT)
+            raw_test, test_split_ok = load_tasks_for_domain(domain_name, TEST_SPLIT)
+
+            if train_split_ok and test_split_ok:
+                # Official splits are disjoint by design
+                train_tasks.extend(raw_train)
+                test_tasks.extend(raw_test)
+            else:
+                # Fallback: split all tasks 65/35 with a deterministic seed
+                # to keep train and test disjoint
+                all_tasks = raw_train  # both fallbacks return the same full set
+                split_rng = random.Random(self.seed + hash(domain_name))
+                split_rng.shuffle(all_tasks)
+                split_idx = int(len(all_tasks) * 0.65)
+                train_tasks.extend(all_tasks[:split_idx])
+                test_tasks.extend(all_tasks[split_idx:])
+                logger.info(
+                    "Domain %s: fallback split %d train / %d test",
+                    domain_name,
+                    split_idx,
+                    len(all_tasks) - split_idx,
+                )
 
         rng = random.Random(self.seed)
         rng.shuffle(train_tasks)
@@ -837,6 +864,7 @@ def build_tau_eval_builders(
             dataset=eval_dataset,
             max_tokens=max_tokens,
             name=eval_name,
+            temperature=temperature,
         )
 
     return [builder]

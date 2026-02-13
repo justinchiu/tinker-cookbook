@@ -110,11 +110,13 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         max_tokens: int,
         name: str = "test",
         num_groups_to_log: int = 4,
+        temperature: float = 1.0,
     ):
         self.env_group_builders_P = dataset_to_env_group_builders(dataset)
         self.max_tokens = max_tokens
         self.name = name
         self.num_groups_to_log = num_groups_to_log
+        self.temperature = temperature
 
     async def eval_token_completer(self, policy: TokenCompleter) -> dict[str, float]:
         async def run_group_rollout(builder, i):
@@ -132,5 +134,7 @@ class RLTestSetEvaluator(SamplingClientEvaluator):
         return metrics
 
     async def __call__(self, sampling_client: tinker.SamplingClient) -> dict[str, float]:
-        policy = TinkerTokenCompleter(sampling_client, max_tokens=self.max_tokens)
+        policy = TinkerTokenCompleter(
+            sampling_client, max_tokens=self.max_tokens, temperature=self.temperature
+        )
         return await self.eval_token_completer(policy)

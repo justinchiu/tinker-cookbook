@@ -1195,7 +1195,13 @@ async def main(
     dataset, maybe_test_dataset = await cfg.dataset_builder()
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
-        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+        evaluators.append(
+            RLTestSetEvaluator(
+                maybe_test_dataset,
+                max_tokens=cfg.max_tokens,
+                temperature=cfg.eval_temperature,
+            )
+        )
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")

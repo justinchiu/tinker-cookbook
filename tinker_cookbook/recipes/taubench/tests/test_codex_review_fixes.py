@@ -218,22 +218,79 @@ class TestActionParserListContent:
 
 
 # ---------------------------------------------------------------------------
-# Bug #14: RLTestSetEvaluator doesn't accept temperature kwarg
+# Bug #14: Thread eval temperature into RLTestSetEvaluator
 # ---------------------------------------------------------------------------
 
 
-class TestRLTestSetEvaluatorAPI:
-    def test_no_temperature_parameter(self):
-        """Verify RLTestSetEvaluator does NOT accept temperature, so we know
-        to not pass it from env.py and eval.py."""
+class TestRLTestSetEvaluatorTemperature:
+    def test_accepts_temperature_parameter(self):
+        """RLTestSetEvaluator must accept a temperature kwarg."""
         import inspect
 
         from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
 
         sig = inspect.signature(RLTestSetEvaluator.__init__)
-        assert "temperature" not in sig.parameters, (
-            "RLTestSetEvaluator should not accept temperature"
+        assert "temperature" in sig.parameters, (
+            "RLTestSetEvaluator should accept temperature"
         )
+
+    def test_temperature_defaults_to_1(self):
+        """Default temperature should be 1.0 for backwards compatibility."""
+        import inspect
+
+        from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
+
+        sig = inspect.signature(RLTestSetEvaluator.__init__)
+        assert sig.parameters["temperature"].default == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Bug #15: Fallback train/test task sets must be disjoint
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackTaskSplitDisjoint:
+    def test_fallback_split_produces_disjoint_sets(self):
+        """When official splits aren't available, the 65/35 fallback must
+        produce non-overlapping train and test sets."""
+        import random
+
+        # Simulate the fallback logic from _get_train_and_test_tasks
+        all_tasks = list(range(100))
+        seed = 42
+        domain_name = "retail"
+
+        split_rng = random.Random(seed + hash(domain_name))
+        split_rng.shuffle(all_tasks)
+        split_idx = int(len(all_tasks) * 0.65)
+
+        train = set(all_tasks[:split_idx])
+        test = set(all_tasks[split_idx:])
+
+        assert len(train & test) == 0, "Train and test sets must not overlap"
+        assert len(train) + len(test) == 100
+        assert len(train) == 65
+        assert len(test) == 35
+
+    def test_fallback_split_is_deterministic(self):
+        """Same seed + domain should produce the same split."""
+        import random
+
+        all_tasks = list(range(50))
+        seed = 123
+        domain_name = "telecom"
+
+        def do_split():
+            tasks = list(all_tasks)  # copy
+            rng = random.Random(seed + hash(domain_name))
+            rng.shuffle(tasks)
+            idx = int(len(tasks) * 0.65)
+            return tasks[:idx], tasks[idx:]
+
+        train1, test1 = do_split()
+        train2, test2 = do_split()
+        assert train1 == train2
+        assert test1 == test2
 
 
 # ---------------------------------------------------------------------------
