@@ -95,24 +95,36 @@ class TestSamplingLimits:
 
 class TestSerialization:
     def test_tool_call_objects_serialized(self, tmp_path):
-        """ToolCall objects with .function attribute should serialize to dicts."""
+        """ToolCall pydantic objects should serialize to dicts."""
+        from tinker_cookbook.renderers.base import ToolCall
 
-        class FakeFunction:
-            name = "get_order"
-            arguments = '{"id": "1"}'
-
-        class FakeToolCall:
-            function = FakeFunction()
-
+        tc_obj = ToolCall(
+            function=ToolCall.FunctionBody(name="get_order", arguments='{"id": "1"}')
+        )
         rl = RolloutLogger(log_dir=str(tmp_path))
         messages = [
-            {"role": "assistant", "content": "", "tool_calls": [FakeToolCall()]},
+            {"role": "assistant", "content": "", "tool_calls": [tc_obj]},
         ]
         path = rl.log_episode("retail", "t1", reward=1.0, messages=messages)
         data = json.loads(open(path).read())
         tc = data["messages"][0]["tool_calls"][0]
-        assert tc["name"] == "get_order"
-        assert tc["arguments"] == '{"id": "1"}'
+        assert tc["function"]["name"] == "get_order"
+        assert tc["function"]["arguments"] == '{"id": "1"}'
+
+    def test_unparsed_tool_call_objects_serialized(self, tmp_path):
+        """UnparsedToolCall pydantic objects should serialize to dicts."""
+        from tinker_cookbook.renderers.base import UnparsedToolCall
+
+        utc = UnparsedToolCall(raw_text="bad json {", error="Invalid JSON")
+        rl = RolloutLogger(log_dir=str(tmp_path))
+        messages = [
+            {"role": "assistant", "content": "text", "unparsed_tool_calls": [utc]},
+        ]
+        path = rl.log_episode("retail", "t1", reward=1.0, messages=messages)
+        data = json.loads(open(path).read())
+        utc_data = data["messages"][0]["unparsed_tool_calls"][0]
+        assert utc_data["raw_text"] == "bad json {"
+        assert utc_data["error"] == "Invalid JSON"
 
 
 class TestLoadEpisode:

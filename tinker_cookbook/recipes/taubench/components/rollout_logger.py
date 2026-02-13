@@ -11,6 +11,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _pydantic_default(obj: Any) -> Any:
+    """JSON serializer fallback for pydantic models (ToolCall, UnparsedToolCall, etc.)."""
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 @dataclass
 class RolloutLogger:
     """
@@ -80,33 +87,19 @@ class RolloutLogger:
 
         filepath = self.rollout_path / filename
 
-        def serialize_message(msg: dict) -> dict:
-            result = {}
-            for k, v in msg.items():
-                if k == "tool_calls" and v:
-                    result[k] = [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        if hasattr(tc, "function")
-                        else tc
-                        for tc in v
-                    ]
-                else:
-                    result[k] = v
-            return result
-
         episode_data = {
             "timestamp": datetime.now().isoformat(),
             "domain": domain,
             "task_id": task_id,
             "reward": reward,
-            "messages": [serialize_message(m) for m in messages],
+            "messages": list(messages),
         }
 
         if metadata:
             episode_data["metadata"] = metadata
 
         with open(filepath, "w") as f:
-            json.dump(episode_data, f, indent=2)
+            json.dump(episode_data, f, indent=2, default=_pydantic_default)
 
         return str(filepath)
 
