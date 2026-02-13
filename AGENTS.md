@@ -123,11 +123,42 @@ Agents often struggle with the nested type hierarchy. Key resources:
 
 ```bash
 # Unit tests (no API needed)
-pytest tinker_cookbook/tests/test_renderers.py
-pytest tinker_cookbook/tests/test_utils.py
+uv run pytest tinker_cookbook/tests/test_renderers.py
+uv run pytest tinker_cookbook/tests/test_utils.py
+
+# Taubench tests
+uv run pytest tinker_cookbook/recipes/taubench/tests/ -v
 
 # Smoke tests (requires API key + network)
-pytest tinker_cookbook/tests/smoke_tests.py
+uv run pytest tinker_cookbook/tests/smoke_tests.py
 ```
 
 For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in dataset builders.
+
+---
+
+## Development Workflow
+
+**TDD is required.** When porting or writing new features:
+1. Write tests FIRST. Run them. Watch them FAIL (RED).
+2. Write/port the implementation. Run tests. Watch them PASS (GREEN).
+3. Never write tests and code simultaneously — that skips the proof that tests catch regressions.
+4. For critical code paths, do mutation testing: break the code, verify the test fails.
+
+**GitHub PRs:** This repo is a fork of `thinking-machines-lab/tinker-cookbook`.
+- `origin` = `justinchiu/tinker-cookbook` (the fork)
+- `upstream` = `thinking-machines-lab/tinker-cookbook`
+- PRs for taubench work go to the **fork**, not upstream: `gh pr create --repo justinchiu/tinker-cookbook --base main`
+- Without `--repo`, `gh` defaults to upstream due to the fork relationship. Always specify `--repo`.
+
+---
+
+## Taubench Migration
+
+The taubench recipe is being migrated from the old `taubench` branch (76 commits diverged from upstream) to the `taubench-new` branch (based on current upstream `main`). Porting is done feature-by-feature with TDD.
+
+**Worktree layout:**
+- `/home/ubuntu/code/tinker-cookbook` — old `taubench` branch (reference, do not modify)
+- `/home/ubuntu/code/tinker-cookbook-merge-upstream` — `taubench-new` branch (active development)
+
+**Source of truth for fork code:** read from `/home/ubuntu/code/tinker-cookbook/tinker_cookbook/recipes/taubench/` when porting.
