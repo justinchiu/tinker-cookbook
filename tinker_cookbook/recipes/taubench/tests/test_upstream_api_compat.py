@@ -6,8 +6,6 @@ that required fields, parameters, and interfaces exist in the upstream code.
 
 import inspect
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Renderer API
@@ -60,9 +58,7 @@ class TestRendererAPI:
         """ToolCall class must exist with FunctionBody inner class."""
         from tinker_cookbook.renderers import ToolCall
 
-        tc = ToolCall(
-            function=ToolCall.FunctionBody(name="test", arguments="{}")
-        )
+        tc = ToolCall(function=ToolCall.FunctionBody(name="test", arguments="{}"))
         assert tc.function.name == "test"
 
 
@@ -198,12 +194,8 @@ class TestRolloutsAPI:
         from tinker_cookbook.rl import rollouts
 
         source = inspect.getsource(rollouts.do_single_rollout)
-        assert "start_episode" in source, (
-            "do_single_rollout must call start_episode on policy"
-        )
-        assert "end_episode" in source, (
-            "do_single_rollout must call end_episode on policy"
-        )
+        assert "start_episode" in source, "do_single_rollout must call start_episode on policy"
+        assert "end_episode" in source, "do_single_rollout must call end_episode on policy"
 
 
 # ---------------------------------------------------------------------------

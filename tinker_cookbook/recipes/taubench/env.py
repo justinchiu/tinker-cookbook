@@ -732,3 +732,87 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         logger.info("=" * 60)
 
         return train_tasks, test_tasks
+
+
+def build_tau_eval_builders(
+    *,
+    enabled: bool,
+    model_name: str,
+    renderer_name: str,
+    domain: str,
+    num_tasks: int | None,
+    batch_size: int,
+    group_size: int,
+    max_tokens: int,
+    temperature: float,
+    task_seed: int,
+    eval_name: str,
+    max_context_length: int | None = None,
+    external_llm_model: str | None = None,
+    external_llm_temperature: float = 0.0,
+    external_llm_max_tokens: int = 1024,
+    ask_sonnet_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION,
+    log_dir: str | None = None,
+) -> list:
+    """Construct Tau2 rollout evaluators for supervised recipes."""
+    from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
+
+    if not enabled:
+        return []
+
+    eval_dataset_builder = Tau2DatasetBuilder(
+        batch_size=max(1, batch_size),
+        model_name_for_tokenizer=model_name,
+        renderer_name=renderer_name,
+        group_size=max(1, group_size),
+        domain=domain,
+        seed=task_seed,
+        test_group_size=max(1, group_size),
+        num_epochs=1,
+        external_llm_model=external_llm_model,
+        external_llm_temperature=external_llm_temperature,
+        external_llm_max_tokens=external_llm_max_tokens,
+        ask_sonnet_mode=ask_sonnet_mode,
+    )
+
+    _, raw_test_dataset = asyncio.run(eval_dataset_builder())
+    tasks = list(raw_test_dataset.tasks)
+    if num_tasks is not None:
+        tasks = tasks[: max(1, num_tasks)]
+
+    if not tasks:
+        raise ValueError("Tau2 evaluation enabled but no tasks were loaded.")
+
+    rollout_logger = RolloutLogger(log_dir=log_dir, enabled=bool(log_dir)) if log_dir else None
+
+    eval_dataset = Tau2Dataset(
+        tasks=tasks,
+        renderer=raw_test_dataset.renderer,
+        domain=raw_test_dataset.domain,
+        batch_size=min(len(tasks), max(1, batch_size)),
+        group_size=max(1, group_size),
+        max_context_length=max_context_length,
+        external_llm_model=external_llm_model,
+        external_llm_temperature=external_llm_temperature,
+        external_llm_max_tokens=external_llm_max_tokens,
+        ask_sonnet_mode=ask_sonnet_mode,
+        rollout_logger=rollout_logger,
+    )
+
+    logger.info(
+        "Enabling Tau2 rollout eval '%s' on %d tasks (domain=%s, group_size=%d)",
+        eval_name,
+        len(tasks),
+        domain,
+        group_size,
+    )
+
+    def builder() -> RLTestSetEvaluator:
+        return RLTestSetEvaluator(
+            dataset=eval_dataset,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            name=eval_name,
+        )
+
+    return [builder]
