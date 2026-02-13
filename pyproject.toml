@@ -33,6 +33,7 @@ dependencies = [
     "modal",
     "litellm>=1.81.11",
     "tenacity>=9.1.4",
+    "tau2",
 ]
 
 [project.urls]
@@ -95,3 +96,6 @@ exclude = [
     # Vendored from HuggingFace, kept identical to upstream
     "kimi-k2.5-hf-tokenizer/tool_declaration_ts.py",
 ]
+
+[tool.uv.sources]
+tau2 = { git = "https://github.com/sierra-research/tau2-bench" }
