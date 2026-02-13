@@ -113,9 +113,8 @@ def main():
         behavior_if_exists=cli_config.behavior_if_log_dir_exists,
     )
 
-    renderer_name = (
-        cli_config.renderer_name
-        or model_info.get_recommended_renderer_name(cli_config.model_name)
+    renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
+        cli_config.model_name
     )
 
     train_on_what = cli_config.train_on_what

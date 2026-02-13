@@ -27,17 +27,13 @@ def setup_tau2_logging():
             backtrace=True,
             diagnose=True,
         )
-        print(
-            f"Redirecting tau2 logs to: {tau2_log_file} (level: {tau2_log_level})"
-        )
+        print(f"Redirecting tau2 logs to: {tau2_log_file} (level: {tau2_log_level})")
 
         # Also setup LiteLLM logging to the same file
         litellm_logger = logging.getLogger("LiteLLM")
         handler = logging.FileHandler(tau2_log_file)
         handler.setFormatter(
-            logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
         litellm_logger.addHandler(handler)
         litellm_logger.propagate = False

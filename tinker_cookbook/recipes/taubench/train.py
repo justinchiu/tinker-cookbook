@@ -75,9 +75,8 @@ def build_config(
 ) -> tuple[train.Config, EpsilonAskSonnetPolicy | None]:
     """Build training config and optionally create epsilon policy."""
     model_name = cli_config.model_name
-    renderer_name = (
-        cli_config.renderer_name
-        or model_info.get_recommended_renderer_name(cli_config.model_name)
+    renderer_name = cli_config.renderer_name or model_info.get_recommended_renderer_name(
+        cli_config.model_name
     )
 
     date_and_time = datetime.now().strftime("%Y-%m-%d-%H-%M")

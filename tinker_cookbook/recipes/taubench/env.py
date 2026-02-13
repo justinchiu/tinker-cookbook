@@ -1,6 +1,7 @@
 """Tau2 environment for RL training with optional ask_sonnet support."""
 
 import asyncio
+import inspect
 import json
 import logging
 import math
@@ -125,6 +126,11 @@ class Tau2Env(Env):
             )
             self.ask_sonnet_renderer = get_ask_sonnet_renderer(ask_sonnet_mode)
 
+        # Check if renderer accepts tools kwarg (some subclasses don't)
+        self._renderer_accepts_tools = (
+            "tools" in inspect.signature(renderer.build_generation_prompt).parameters
+        )
+
         # Initialize action parser
         self.action_parser = ActionParser(renderer)
 
@@ -137,15 +143,19 @@ class Tau2Env(Env):
             initial_user_content=initial_user_content,
         )
 
+    def _build_prompt(self, messages: list[dict]):
+        """Build generation prompt, passing tools only if renderer supports it."""
+        if self._renderer_accepts_tools:
+            return self.renderer.build_generation_prompt(messages, tools=self.tools)
+        return self.renderer.build_generation_prompt(messages)
+
     @property
     def stop_condition(self) -> StopCondition:
         return self.renderer.get_stop_sequences()
 
     async def initial_observation(self) -> tuple[Observation, StopCondition]:
         """Get the initial observation for the policy."""
-        model_input = self.renderer.build_generation_prompt(
-            self.messages.messages, tools=self.tools
-        )
+        model_input = self._build_prompt(self.messages.messages)
         self._current_obs_length = model_input.length
 
         if self.max_context_length is not None and model_input.length > self.max_context_length:
@@ -172,9 +182,7 @@ class Tau2Env(Env):
                 self.task_id,
             )
             self._context_exceeded = True
-            current_obs = self.renderer.build_generation_prompt(
-                self.messages.messages, tools=self.tools
-            )
+            current_obs = self._build_prompt(self.messages.messages)
             return StepResult(
                 next_observation=current_obs,
                 next_stop_condition=self.stop_condition,
@@ -204,9 +212,7 @@ class Tau2Env(Env):
                     tool_call_id="ask_sonnet_call",
                 )
                 self._log_episode(reward=0.0)
-                current_obs = self.renderer.build_generation_prompt(
-                    self.messages.messages, tools=self.tools
-                )
+                current_obs = self._build_prompt(self.messages.messages)
                 return StepResult(
                     next_observation=current_obs,
                     next_stop_condition=self.stop_condition,
@@ -243,9 +249,7 @@ class Tau2Env(Env):
                     "Please proceed without advisor help."
                 )
                 self.messages.add_tool_result(error_msg, tool_call_id="ask_sonnet_call")
-                next_obs = self.renderer.build_generation_prompt(
-                    self.messages.messages, tools=self.tools
-                )
+                next_obs = self._build_prompt(self.messages.messages)
                 self._current_obs_length = next_obs.length
                 return StepResult(
                     next_observation=next_obs,
@@ -259,9 +263,7 @@ class Tau2Env(Env):
 
             if self.ask_sonnet_renderer.should_return_early():
                 # Conditioning: return observation, wait for policy followup
-                next_obs = self.renderer.build_generation_prompt(
-                    self.messages.messages, tools=self.tools
-                )
+                next_obs = self._build_prompt(self.messages.messages)
                 self._current_obs_length = next_obs.length
                 return StepResult(
                     next_observation=next_obs,
@@ -294,7 +296,7 @@ class Tau2Env(Env):
         if result.raw_obs and not (result.terminated or result.truncated):
             self._process_observation(result)
 
-        next_obs = self.renderer.build_generation_prompt(self.messages.messages, tools=self.tools)
+        next_obs = self._build_prompt(self.messages.messages)
         self._current_obs_length = next_obs.length
         self.policy_input_tokens += next_obs.length
 
@@ -811,7 +813,6 @@ def build_tau_eval_builders(
         return RLTestSetEvaluator(
             dataset=eval_dataset,
             max_tokens=max_tokens,
-            temperature=temperature,
             name=eval_name,
         )
 

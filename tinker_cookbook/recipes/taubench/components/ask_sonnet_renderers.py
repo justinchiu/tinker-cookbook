@@ -118,8 +118,8 @@ class AskSonnetRenderer(ABC):
         return result
 
     def _build_system_with_tools(self, base_prompt: str, tools: list[dict]) -> str:
-        # Filter out ask_sonnet tool
-        filtered_tools = [t for t in tools if t.get("function", {}).get("name") != "ask_sonnet"]
+        # Filter out ask_sonnet tool (both nested and top-level formats)
+        filtered_tools = [t for t in tools if t.get("function", t).get("name") != "ask_sonnet"]
 
         if not filtered_tools:
             return base_prompt
@@ -167,6 +167,11 @@ Do NOT respond with empty content. Always provide a response."""
             func = tc.get("function", tc)
             name = func.get("name", "unknown")
             args = func.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    pass
         else:
             return str(tc)
 
@@ -221,6 +226,28 @@ class ConditioningRenderer(AskSonnetRenderer):
         if qwen_followup is None:
             raise ValueError("Conditioning mode requires policy followup")
         content = qwen_followup.get("content", "")
+        # Check for tool_calls when content is empty (OpenAI-style format)
+        if not content and qwen_followup.get("tool_calls"):
+            tc = qwen_followup["tool_calls"][0]
+            if isinstance(tc, dict):
+                func = tc.get("function", tc)
+                name = func.get("name", "unknown")
+                args = func.get("arguments", {})
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                return json.dumps({"name": name, "arguments": args})
+            elif hasattr(tc, "function"):
+                name = tc.function.name
+                args = tc.function.arguments
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                return json.dumps({"name": name, "arguments": args})
         return self._extract_action_from_content(content)
 
     def should_return_early(self) -> bool:

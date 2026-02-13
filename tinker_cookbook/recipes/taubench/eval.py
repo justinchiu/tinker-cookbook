@@ -59,9 +59,8 @@ class CLIConfig:
 
 async def run_evaluation(config: CLIConfig) -> dict[str, float]:
     """Run tau2 evaluation and return metrics."""
-    renderer_name = (
-        config.renderer_name
-        or model_info.get_recommended_renderer_name(config.model_name)
+    renderer_name = config.renderer_name or model_info.get_recommended_renderer_name(
+        config.model_name
     )
 
     logger.info("=" * 60)
@@ -131,29 +130,21 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
 
     if config.checkpoint_path:
         logger.info("Loading checkpoint: %s", config.checkpoint_path)
-        training_client = (
-            await service_client.create_training_client_from_state_async(
-                config.checkpoint_path,
-                user_metadata={},
-            )
+        training_client = await service_client.create_training_client_from_state_async(
+            config.checkpoint_path,
+            user_metadata={},
         )
-        sampling_client = (
-            await training_client.save_weights_and_get_sampling_client_async(
-                name="eval"
-            )
+        sampling_client = await training_client.save_weights_and_get_sampling_client_async(
+            name="eval"
         )
     else:
         logger.info("Using base model (no checkpoint)")
-        training_client = (
-            await service_client.create_lora_training_client_async(
-                base_model=config.model_name,
-                rank=config.lora_rank,
-            )
+        training_client = await service_client.create_lora_training_client_async(
+            base_model=config.model_name,
+            rank=config.lora_rank,
         )
-        sampling_client = (
-            await training_client.save_weights_and_get_sampling_client_async(
-                name="eval"
-            )
+        sampling_client = await training_client.save_weights_and_get_sampling_client_async(
+            name="eval"
         )
 
     evaluator = RLTestSetEvaluator(
@@ -161,7 +152,6 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
         max_tokens=config.max_tokens,
         name="tau2_eval",
         num_groups_to_log=config.num_groups_to_log,
-        temperature=config.temperature,
     )
 
     logger.info("Starting evaluation...")

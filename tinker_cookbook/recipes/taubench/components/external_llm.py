@@ -13,16 +13,17 @@ logger = logging.getLogger(__name__)
 
 def is_retryable_error(exception: BaseException) -> bool:
     """Check if an exception is retryable."""
-    if isinstance(
-        exception,
-        (
-            litellm.APIConnectionError,
-            litellm.InternalServerError,
-            litellm.RateLimitError,
-            litellm.BadGatewayError,
-            litellm.Timeout,
-        ),
-    ):
+    # Build exception tuple dynamically to handle litellm version differences
+    retryable_types: list[type] = [
+        litellm.APIConnectionError,
+        litellm.InternalServerError,
+        litellm.RateLimitError,
+    ]
+    for attr_name in ("BadGatewayError", "Timeout"):
+        cls = getattr(litellm, attr_name, None)
+        if cls is not None:
+            retryable_types.append(cls)
+    if isinstance(exception, tuple(retryable_types)):
         return True
     error_str = str(exception).lower()
     if "credit balance" in error_str or "billing" in error_str:

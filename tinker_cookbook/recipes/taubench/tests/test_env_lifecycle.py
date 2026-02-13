@@ -32,6 +32,7 @@ def _make_env(**overrides) -> Tau2Env:
 
     # Core attributes
     env.renderer = MagicMock()
+    env._renderer_accepts_tools = True
     env.domain = "retail"
     env.task_id = "test_task"
     env.max_context_length = overrides.get("max_context_length", None)

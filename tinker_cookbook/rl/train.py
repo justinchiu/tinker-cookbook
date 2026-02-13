@@ -448,6 +448,7 @@ async def do_sync_training_with_stream_minibatch(
                     temperature=cfg.temperature,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
+                    policy_factory=cfg.policy_factory,
                 )
                 metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
                 if trajectory_group is not None:
@@ -584,6 +585,7 @@ async def do_async_training(
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
                 do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
+                policy_factory=cfg.policy_factory,
             )
             if trajectory_group is None:
                 trajectory_groups_queue.put_nowait(None)
@@ -745,8 +747,14 @@ async def do_group_rollout_and_filter_constant_reward(
     temperature: float,
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
+    policy_factory: PolicyFactory | None = None,
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
+    if policy_factory is not None:
+        policy = policy_factory(sampling_client)
+    else:
+        policy = TinkerTokenCompleter(
+            sampling_client, max_tokens=max_tokens, temperature=temperature
+        )
 
     with logtree.optional_enable_logging(enable_logging):
         trajectory_group = await do_group_rollout(env_group_builder, policy)
@@ -1097,6 +1105,7 @@ async def do_sync_training(
                         temperature=cfg.temperature,
                         do_remove_constant_reward_groups=False,
                         enable_logging=i < cfg.num_groups_to_log,
+                        policy_factory=cfg.policy_factory,
                     )
                     for i, builder in enumerate(env_group_builders_P)
                 ),
@@ -1116,6 +1125,10 @@ async def do_sync_training(
             env_group_builders_P,
             trajectory_groups_P,
         )
+
+        # Invoke on_train_step callback if configured
+        if cfg.on_train_step is not None:
+            cfg.on_train_step(i_batch)
 
         # Log metrics
         metrics.update(train_step_metrics)

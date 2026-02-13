@@ -151,7 +151,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         self._tokenizer = get_tokenizer(self.model_name)
 
         # Pre-compute ask_sonnet tokens
-        ask_sonnet_str = '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'
+        ask_sonnet_str = '<tool_call>\n{"name": "ask_sonnet", "arguments": {}}\n</tool_call>'
         self._ask_sonnet_tokens = self._tokenizer.encode(ask_sonnet_str, add_special_tokens=False)
 
         logger.info(

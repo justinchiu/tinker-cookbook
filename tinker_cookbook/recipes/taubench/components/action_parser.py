@@ -36,6 +36,13 @@ class ActionParser:
         message, parse_success = self.renderer.parse_response(action_tokens)
         content = message.get("content", "")
 
+        # Normalize list content (e.g., from thinking parts) to string
+        if isinstance(content, list):
+            content = " ".join(
+                part.get("text", "") if isinstance(part, dict) else str(part) for part in content
+            )
+            message = {**message, "content": content}
+
         # Check for tool calls in different formats
         tool_name, tool_args = self._extract_tool_call(message)
 

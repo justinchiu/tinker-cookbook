@@ -3,6 +3,7 @@ Dataset builder for supervised fine-tuning on tau2 simulation data.
 """
 
 import chz
+import inspect
 import json
 import logging
 import random
@@ -26,6 +27,14 @@ from tinker_cookbook.supervised.common import datum_from_model_input_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
 
 logger = logging.getLogger(__name__)
+
+
+def _build_supervised_example(renderer, messages, train_on_what, tools=None):
+    """Build supervised example, passing tools only if renderer supports it."""
+    sig = inspect.signature(renderer.build_supervised_example)
+    if "tools" in sig.parameters and tools is not None:
+        return renderer.build_supervised_example(messages, train_on_what=train_on_what, tools=tools)
+    return renderer.build_supervised_example(messages, train_on_what=train_on_what)
 
 
 def _inject_ask_sonnet_calls(
@@ -414,10 +423,8 @@ class DynamicInjectionDataset(SupervisedDataset):
 
             # Render to tokens
             tools = self.domain_tools.get(conv.domain)
-            model_input, weights = self.renderer.build_supervised_example(
-                messages,
-                train_on_what=self.train_on_what,
-                tools=tools,
+            model_input, weights = _build_supervised_example(
+                self.renderer, messages, self.train_on_what, tools=tools
             )
             datum = datum_from_model_input_weights(model_input, weights, self.max_length)
             datums.append(datum)
@@ -581,8 +588,8 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
                 # Normalize messages
                 normalized = _normalize_tau2_messages(messages)
                 # Convert to Datum immediately
-                model_input, weights = self.renderer.build_supervised_example(
-                    normalized, train_on_what=train_on_what, tools=tools
+                model_input, weights = _build_supervised_example(
+                    self.renderer, normalized, train_on_what, tools=tools
                 )
                 datum = datum_from_model_input_weights(
                     model_input, weights, self.common_config.max_length
