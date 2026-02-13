@@ -237,25 +237,41 @@ class TestRLTestSetEvaluatorAPI:
 
 
 # ---------------------------------------------------------------------------
-# Bug #16: Gate tools kwarg for renderer compatibility
+# Bug #16: Tool injection uses upstream create_conversation_prefix_with_tools
 # ---------------------------------------------------------------------------
 
 
 class TestRendererToolsKwargCompat:
-    def test_build_generation_prompt_base_accepts_tools(self):
-        """Base Renderer.build_generation_prompt should accept tools kwarg."""
+    def test_create_conversation_prefix_with_tools_exists(self):
+        """Renderer.create_conversation_prefix_with_tools must exist.
+
+        Taubench injects tools into the system prompt using this upstream method
+        for both RL (env.py) and SFT (sft_dataset.py).
+        """
         import inspect
 
         from tinker_cookbook.renderers.base import Renderer
 
-        sig = inspect.signature(Renderer.build_generation_prompt)
+        assert hasattr(Renderer, "create_conversation_prefix_with_tools")
+        sig = inspect.signature(Renderer.create_conversation_prefix_with_tools)
         assert "tools" in sig.parameters
+        assert "system_prompt" in sig.parameters
 
-    def test_build_supervised_example_base_accepts_tools(self):
-        """Base Renderer.build_supervised_example should accept tools kwarg."""
-        import inspect
+    def test_openai_tools_to_tool_specs_conversion(self):
+        """_openai_tools_to_tool_specs should convert OpenAI format to ToolSpec."""
+        from tinker_cookbook.recipes.taubench.env import _openai_tools_to_tool_specs
 
-        from tinker_cookbook.renderers.base import Renderer
-
-        sig = inspect.signature(Renderer.build_supervised_example)
-        assert "tools" in sig.parameters
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_order",
+                    "description": "Get order details",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        specs = _openai_tools_to_tool_specs(tools)
+        assert len(specs) == 1
+        assert specs[0]["name"] == "get_order"
+        assert specs[0]["description"] == "Get order details"

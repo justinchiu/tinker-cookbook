@@ -96,6 +96,7 @@ Agents often struggle with the nested type hierarchy. Key resources:
 - Use `safezip`, `timed`, `scope` helpers
 - `@chz.chz` decorator for config serialization
 - `ml_log.log_metrics` for metrics; `logtree` for transcripts
+- **MINIMIZE USE OF TRY/EXCEPT.** Prefer failing loudly. Only catch exceptions at true system boundaries (e.g., network retries). Never swallow errors silently.
 
 **Env lifecycle:** `Env` objects are single-use (no reset). Create via `EnvGroupBuilder`.
 
@@ -117,6 +118,10 @@ Agents often struggle with the nested type hierarchy. Key resources:
 
 7. **DPO:** Start with `dpo_beta=0.1`, LR~1e-5.
 
+8. **Tool injection:** Both RL and SFT must use `renderer.create_conversation_prefix_with_tools(tool_specs, system_prompt)` to inject tool definitions. Do NOT pass `tools=` to `build_generation_prompt` or `build_supervised_example` — those params are accepted but silently ignored.
+
+9. **Debugging evals:** Always save full trajectories including the system prompt (which contains tool definitions). If tools are missing from the system prompt, the model will hallucinate tool names and get "Tool not found" errors.
+
 ---
 
 ## Testing
@@ -137,6 +142,22 @@ For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in d
 
 ---
 
+## Type Checking
+
+**Types must pass.** We are not strict about full type coverage yet, but all code must pass both type checkers without errors:
+
+```bash
+# Pyright (primary type checker)
+uvx pyright tinker_cookbook/recipes/taubench/
+
+# ty (Ruff's type checker, secondary)
+uvx ty check tinker_cookbook/recipes/taubench/
+```
+
+Run both before committing. Fix any errors they report — do not use `type: ignore` to suppress them unless there is a genuine false positive (document why in a comment).
+
+---
+
 ## Development Workflow
 
 **TDD is required.** When porting or writing new features:
@@ -145,13 +166,19 @@ For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in d
 3. Never write tests and code simultaneously — that skips the proof that tests catch regressions.
 4. For critical code paths, do mutation testing: break the code, verify the test fails.
 
-**Dependencies:** Use `uv add <package>` to add new dependencies (not `uv pip install`). This updates `pyproject.toml` so the dependency is declared for all users, not just installed locally.
-
 **GitHub PRs:** This repo is a fork of `thinking-machines-lab/tinker-cookbook`.
 - `origin` = `justinchiu/tinker-cookbook` (the fork)
 - `upstream` = `thinking-machines-lab/tinker-cookbook`
 - PRs for taubench work go to the **fork**, not upstream: `gh pr create --repo justinchiu/tinker-cookbook --base main`
 - Without `--repo`, `gh` defaults to upstream due to the fork relationship. Always specify `--repo`.
+
+**PR review cycle:** After pushing, always check for and address PR review comments (from Codex or humans):
+1. Commit and push your changes
+2. Check PR comments: `gh api repos/justinchiu/tinker-cookbook/pulls/<PR#>/comments`
+3. For each review comment: write a regression test (RED), fix the bug (GREEN), commit
+4. Push the fixes
+5. Reply to each comment on the PR: `gh api repos/justinchiu/tinker-cookbook/pulls/<PR#>/comments/<ID>/replies -f body="Fixed in <commit>"`
+6. Repeat until all comments are addressed
 
 ---
 

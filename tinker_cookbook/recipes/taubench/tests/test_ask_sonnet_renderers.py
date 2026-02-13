@@ -153,6 +153,25 @@ class TestRenderForAdvisor:
         assert result[-1]["role"] == "user"
         assert result[-1]["content"] == "help"
 
+    def test_removes_final_ask_sonnet_pydantic_toolcall(self, sample_tools):
+        """Pydantic ToolCall objects (from Qwen3 renderer) must also be detected."""
+        from tinker_cookbook.renderers.base import ToolCall
+
+        r = self._make_renderer()
+        tc = ToolCall(
+            function=ToolCall.FunctionBody(name="ask_sonnet", arguments="{}"),
+            id="tc_ask",
+        )
+        messages = [
+            {"role": "system", "content": "sys prompt"},
+            {"role": "user", "content": "help"},
+            {"role": "assistant", "content": "", "tool_calls": [tc]},
+        ]
+        result = r.render_for_advisor(messages, sample_tools, "sys prompt")
+        # Last message should be the user message, not the ask_sonnet assistant turn
+        assert result[-1]["role"] == "user"
+        assert result[-1]["content"] == "help"
+
     def test_tool_messages_become_user_messages(self, sample_tools):
         r = self._make_renderer()
         messages = [

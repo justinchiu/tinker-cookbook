@@ -13,30 +13,25 @@ import inspect
 
 
 class TestRendererAPI:
-    def test_build_supervised_example_accepts_tools(self):
-        """Renderer.build_supervised_example should accept optional tools kwarg.
+    def test_create_conversation_prefix_with_tools_exists(self):
+        """Renderer must have create_conversation_prefix_with_tools method.
 
-        Taubench SFT dataset passes tool definitions to build_supervised_example
-        so the renderer can include tool tokens in the supervised example.
+        Taubench uses this upstream method to inject tool definitions into the
+        system prompt for both RL (env.py) and SFT (sft_dataset.py).
         """
         from tinker_cookbook.renderers.base import Renderer
 
-        sig = inspect.signature(Renderer.build_supervised_example)
-        assert "tools" in sig.parameters, (
-            "Renderer.build_supervised_example must accept 'tools' parameter"
-        )
+        assert hasattr(Renderer, "create_conversation_prefix_with_tools")
+        sig = inspect.signature(Renderer.create_conversation_prefix_with_tools)
+        assert "tools" in sig.parameters
+        assert "system_prompt" in sig.parameters
 
-    def test_build_generation_prompt_accepts_tools(self):
-        """Renderer.build_generation_prompt should accept optional tools kwarg.
+    def test_toolspec_type_exists(self):
+        """ToolSpec TypedDict must exist for create_conversation_prefix_with_tools."""
+        from tinker_cookbook.renderers.base import ToolSpec
 
-        Taubench env passes tool definitions when building generation prompts.
-        """
-        from tinker_cookbook.renderers.base import Renderer
-
-        sig = inspect.signature(Renderer.build_generation_prompt)
-        assert "tools" in sig.parameters, (
-            "Renderer.build_generation_prompt must accept 'tools' parameter"
-        )
+        spec = ToolSpec(name="test", description="desc", parameters={})
+        assert spec["name"] == "test"
 
     def test_parse_response_returns_message_bool(self):
         """Renderer.parse_response should return (Message, bool)."""

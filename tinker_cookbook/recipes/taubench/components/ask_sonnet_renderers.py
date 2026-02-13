@@ -23,8 +23,12 @@ def _is_ask_sonnet_message(msg: dict) -> bool:
     if "ask_sonnet" in msg.get("content", ""):
         return True
     for tc in msg.get("tool_calls", []):
-        func = tc.get("function", tc) if isinstance(tc, dict) else tc
-        name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
+        if isinstance(tc, dict):
+            func = tc.get("function", tc)
+            name = func.get("name", "") if isinstance(func, dict) else ""
+        else:
+            # Handle pydantic ToolCall objects (e.g., from Qwen3 renderer)
+            name = getattr(getattr(tc, "function", None), "name", "")
         if name == "ask_sonnet":
             return True
     return False

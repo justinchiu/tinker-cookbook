@@ -1,7 +1,6 @@
 """Tau2 environment for RL training with optional ask_sonnet support."""
 
 import asyncio
-import inspect
 import json
 import logging
 import math
@@ -30,6 +29,7 @@ from tinker_cookbook.recipes.taubench.components import (
     get_ask_sonnet_renderer,
 )
 from tinker_cookbook.renderers import Renderer, get_renderer
+from tinker_cookbook.renderers.base import ToolSpec
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -42,6 +42,21 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 logger = logging.getLogger(__name__)
+
+
+def _openai_tools_to_tool_specs(tools: list[dict]) -> list[ToolSpec]:
+    """Convert OpenAI-format tools to upstream ToolSpec format."""
+    specs = []
+    for tool in tools:
+        func = tool.get("function", tool)
+        specs.append(
+            ToolSpec(
+                name=func["name"],
+                description=func.get("description", ""),
+                parameters=func.get("parameters", {}),
+            )
+        )
+    return specs
 
 
 class Tau2Env(Env):
@@ -126,10 +141,18 @@ class Tau2Env(Env):
             )
             self.ask_sonnet_renderer = get_ask_sonnet_renderer(ask_sonnet_mode)
 
-        # Check if renderer accepts tools kwarg (some subclasses don't)
-        self._renderer_accepts_tools = (
-            "tools" in inspect.signature(renderer.build_generation_prompt).parameters
+        # Store clean system prompt (before tool injection) for the advisor.
+        # The advisor's render_for_advisor adds its own tool descriptions, so we
+        # must NOT pass it the Qwen3-formatted tools from the renderer.
+        self._advisor_system_prompt = system_prompt
+
+        # Use upstream's create_conversation_prefix_with_tools to inject tool
+        # definitions into the system prompt via the renderer's native format.
+        tool_specs = _openai_tools_to_tool_specs(self.tools)
+        prefix_messages = renderer.create_conversation_prefix_with_tools(
+            tool_specs, system_prompt
         )
+        system_prompt_with_tools = prefix_messages[0].get("content", system_prompt)
 
         # Initialize action parser
         self.action_parser = ActionParser(renderer)
@@ -139,14 +162,12 @@ class Tau2Env(Env):
             initial_obs if initial_obs else "(Customer connected, please greet them)"
         )
         self.messages = MessageManager(
-            system_prompt=system_prompt,
+            system_prompt=system_prompt_with_tools,
             initial_user_content=initial_user_content,
         )
 
     def _build_prompt(self, messages: list[dict]):
-        """Build generation prompt, passing tools only if renderer supports it."""
-        if self._renderer_accepts_tools:
-            return self.renderer.build_generation_prompt(messages, tools=self.tools)
+        """Build generation prompt. Tools are already in the system prompt."""
         return self.renderer.build_generation_prompt(messages)
 
     @property
@@ -227,11 +248,13 @@ class Tau2Env(Env):
             # Add ask_sonnet call to messages
             self.messages.add_ask_sonnet_call(parsed.original_message)
 
-            # Call external LLM with usage tracking
+            # Call external LLM with usage tracking.
+            # Pass the clean system prompt (without Qwen3 tool format) because
+            # render_for_advisor adds its own tool descriptions for the advisor.
             advisor_messages = self.ask_sonnet_renderer.render_for_advisor(
                 self.messages.messages,
                 self.tools,
-                self.messages.system_prompt,
+                self._advisor_system_prompt,
             )
             result = await self.external_llm.call_with_usage(advisor_messages)
             sonnet_response = result.content

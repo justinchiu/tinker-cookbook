@@ -3,7 +3,6 @@ Dataset builder for supervised fine-tuning on tau2 simulation data.
 """
 
 import chz
-import inspect
 import json
 import logging
 import random
@@ -20,7 +19,7 @@ from tinker_cookbook.recipes.taubench.components import (
     AskSonnetMode,
     get_ask_sonnet_renderer,
 )
-from tinker_cookbook.recipes.taubench.env import construct_tau2_env
+from tinker_cookbook.recipes.taubench.env import construct_tau2_env, _openai_tools_to_tool_specs
 from tinker_cookbook import renderers
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
@@ -29,12 +28,39 @@ from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDatas
 logger = logging.getLogger(__name__)
 
 
-def _build_supervised_example(renderer, messages, train_on_what, tools=None):
-    """Build supervised example, passing tools only if renderer supports it."""
-    sig = inspect.signature(renderer.build_supervised_example)
-    if "tools" in sig.parameters and tools is not None:
-        return renderer.build_supervised_example(messages, train_on_what=train_on_what, tools=tools)
-    return renderer.build_supervised_example(messages, train_on_what=train_on_what)
+def _inject_tools_into_messages(
+    renderer: renderers.Renderer,
+    messages: list[dict],
+    tools: list[dict] | None,
+) -> list[dict]:
+    """Inject tool definitions into the system prompt of the message list.
+
+    Uses the upstream renderer's create_conversation_prefix_with_tools —
+    the same method used by env.py for RL — to generate a system message
+    with tools baked in, then replaces the system message in the message list.
+    """
+    if not tools:
+        return messages
+
+    # Find existing system prompt
+    system_prompt = ""
+    has_system = bool(messages) and messages[0].get("role") == "system"
+    if has_system:
+        content = messages[0].get("content", "")
+        system_prompt = content if isinstance(content, str) else ""
+
+    # Use upstream renderer's native tool injection
+    tool_specs = _openai_tools_to_tool_specs(tools)
+    prefix_messages = renderer.create_conversation_prefix_with_tools(
+        tool_specs, system_prompt
+    )
+    system_with_tools = prefix_messages[0].get("content", system_prompt)
+
+    # Replace or prepend system message
+    system_msg: dict = {"role": "system", "content": system_with_tools}
+    if has_system:
+        return [system_msg] + list(messages[1:])
+    return [system_msg] + list(messages)
 
 
 def _inject_ask_sonnet_calls(
@@ -421,10 +447,11 @@ class DynamicInjectionDataset(SupervisedDataset):
             if self.train_on_what == TrainOnWhat.CUSTOMIZED:
                 messages = _mark_trainable_fields(messages)
 
-            # Render to tokens
+            # Inject tools into system prompt using upstream renderer method
             tools = self.domain_tools.get(conv.domain)
-            model_input, weights = _build_supervised_example(
-                self.renderer, messages, self.train_on_what, tools=tools
+            messages = _inject_tools_into_messages(self.renderer, messages, tools)
+            model_input, weights = self.renderer.build_supervised_example(
+                messages, train_on_what=self.train_on_what
             )
             datum = datum_from_model_input_weights(model_input, weights, self.max_length)
             datums.append(datum)
@@ -498,11 +525,11 @@ def _normalize_tau2_messages(messages: list[dict]) -> list[dict]:
 
     This strips out the "id" field from tool_calls since the model shouldn't learn to generate IDs.
     """
-    normalized = []
+    normalized: list[dict] = []
 
     for msg in messages:
         # Copy the message
-        new_msg = {"role": msg["role"]}
+        new_msg: dict = {"role": msg["role"]}
 
         # Handle content - always set it (empty string if None)
         if msg.get("content") is not None:
@@ -587,9 +614,10 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
             if messages:  # Skip empty conversations
                 # Normalize messages
                 normalized = _normalize_tau2_messages(messages)
-                # Convert to Datum immediately
-                model_input, weights = _build_supervised_example(
-                    self.renderer, normalized, train_on_what, tools=tools
+                # Inject tools and convert to Datum
+                messages_with_tools = _inject_tools_into_messages(self.renderer, normalized, tools)
+                model_input, weights = self.renderer.build_supervised_example(
+                    messages_with_tools, train_on_what=train_on_what
                 )
                 datum = datum_from_model_input_weights(
                     model_input, weights, self.common_config.max_length
@@ -675,9 +703,10 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
                 if messages:  # Skip empty conversations
                     # Normalize messages
                     normalized = _normalize_tau2_messages(messages)
-                    # Convert to Datum immediately
+                    # Inject tools and convert to Datum
+                    messages_with_tools = _inject_tools_into_messages(self.renderer, normalized, tools)
                     model_input, weights = self.renderer.build_supervised_example(
-                        normalized, train_on_what=train_on_what, tools=tools
+                        messages_with_tools, train_on_what=train_on_what
                     )
                     datum = datum_from_model_input_weights(
                         model_input, weights, self.common_config.max_length
@@ -747,11 +776,12 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
 
             # Load tools for this domain (once per domain)
             if file_domain not in domain_tools:
-                domain_tools[file_domain] = _get_tau2_tools(file_domain)
-                if domain_tools[file_domain]:
+                loaded_tools = _get_tau2_tools(file_domain)
+                domain_tools[file_domain] = loaded_tools
+                if loaded_tools is not None:
                     logger.info(
                         "Loaded %d tool definitions for domain '%s'",
-                        len(domain_tools[file_domain]),
+                        len(loaded_tools),
                         file_domain,
                     )
                 else:
@@ -761,8 +791,8 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                     )
 
                 # Add ask_sonnet tool if injection is enabled
-                if self.ask_sonnet_injection_rate > 0 and domain_tools[file_domain] is not None:
-                    domain_tools[file_domain] = domain_tools[file_domain] + [ASK_SONNET_TOOL]
+                if self.ask_sonnet_injection_rate > 0 and loaded_tools is not None:
+                    domain_tools[file_domain] = loaded_tools + [ASK_SONNET_TOOL]
                     logger.info("Added ask_sonnet tool for domain '%s'", file_domain)
 
             for sim in data["simulations"]:
@@ -842,10 +872,10 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                 if train_on_what == TrainOnWhat.CUSTOMIZED:
                     messages = _mark_trainable_fields(messages)
                 tools = domain_tools.get(conv.domain)
+                messages = _inject_tools_into_messages(self.renderer, messages, tools)
                 model_input, weights = self.renderer.build_supervised_example(
                     messages,
                     train_on_what=train_on_what,
-                    tools=tools,
                 )
                 datum = datum_from_model_input_weights(
                     model_input, weights, self.common_config.max_length
@@ -877,10 +907,10 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                 messages = _mark_trainable_fields(messages)
 
             tools = domain_tools.get(conv.domain)
+            messages = _inject_tools_into_messages(self.renderer, messages, tools)
             model_input, weights = self.renderer.build_supervised_example(
                 messages,
                 train_on_what=train_on_what,
-                tools=tools,
             )
             datum = datum_from_model_input_weights(
                 model_input, weights, self.common_config.max_length

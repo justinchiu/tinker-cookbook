@@ -98,7 +98,17 @@ class ExternalLLMClient:
             self._log_error(messages, e)
             raise
 
-        content = response.choices[0].message.content or ""
+        raw_message = response.choices[0].message
+        content = raw_message.content or ""
+
+        # Debug: log raw response details for empty content
+        if not content.strip():
+            logger.warning(
+                "Empty content from %s. Raw message: %s, finish_reason: %s",
+                self.model,
+                raw_message,
+                response.choices[0].finish_reason,
+            )
 
         usage = response.usage
         input_tokens = usage.prompt_tokens if usage else 0
