@@ -38,7 +38,7 @@ class MessageManager:
         logger.debug("Added assistant message dict (messages=%d)", len(self.messages))
 
     def add_user(self, content: str) -> None:
-        if not content:
+        if not content or not content.strip():
             content = "(waiting)"
         msg = {"role": "user", "content": content}
         self.messages.append(msg)
@@ -49,7 +49,7 @@ class MessageManager:
         content: str,
         tool_call_id: str = "tool_call",
     ) -> None:
-        if not content:
+        if not content or not content.strip():
             content = "(empty result)"
         tool_msg = {
             "role": "tool",

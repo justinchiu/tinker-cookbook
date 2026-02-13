@@ -89,11 +89,15 @@ class AskSonnetRenderer(ABC):
                 tool_calls = msg.get("tool_calls", [])
 
                 if tool_calls:
-                    parts = [content] if content else []
+                    parts = [content] if content and content.strip() else []
                     for tc in tool_calls:
                         tc_json = self._format_tool_call(tc)
                         parts.append(f"<tool_call>\n{tc_json}\n</tool_call>")
                     content = "\n".join(parts)
+
+                # Anthropic requires non-whitespace text content
+                if not content or not content.strip():
+                    content = "(no content)"
 
                 result.append(
                     {
@@ -103,10 +107,13 @@ class AskSonnetRenderer(ABC):
                 )
 
             elif role == "user":
+                user_content = msg.get("content", "")
+                if not user_content or not user_content.strip():
+                    user_content = "(waiting)"
                 result.append(
                     {
                         "role": "user",
-                        "content": msg.get("content", ""),
+                        "content": user_content,
                     }
                 )
 

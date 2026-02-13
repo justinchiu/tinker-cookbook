@@ -28,11 +28,17 @@ class TestAddUser:
         mm.add_user("")
         assert mm.messages[-1]["content"] == "(waiting)"
 
-    def test_whitespace_is_not_replaced(self):
-        """Non-empty whitespace string should NOT be replaced (only empty string is falsy)."""
+    def test_whitespace_is_replaced(self):
+        """Whitespace-only content should be replaced (Anthropic requires non-whitespace)."""
         mm = MessageManager(system_prompt="sys", initial_user_content="hi")
         mm.add_user(" ")
-        assert mm.messages[-1]["content"] == " "
+        assert mm.messages[-1]["content"] == "(waiting)"
+
+    def test_newlines_only_is_replaced(self):
+        """Newlines-only content should be replaced."""
+        mm = MessageManager(system_prompt="sys", initial_user_content="hi")
+        mm.add_user("\n\n\n")
+        assert mm.messages[-1]["content"] == "(waiting)"
 
 
 class TestAddToolResult:
