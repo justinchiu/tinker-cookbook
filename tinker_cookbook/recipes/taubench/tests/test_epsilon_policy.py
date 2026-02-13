@@ -496,7 +496,7 @@ class TestCall:
                 '<tool_call>\n{"name": "ask_sonnet"}\n</tool_call>'
             )
 
-            result = await policy(mock_input, stop=["<|end|>"])
+            await policy(mock_input, stop=["<|end|>"])
 
         assert policy.metrics.episode_policy_ask_sonnet == 1
         # last_action_was_ask_sonnet should be set
