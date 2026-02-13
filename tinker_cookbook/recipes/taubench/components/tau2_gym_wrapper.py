@@ -54,8 +54,7 @@ class Tau2GymWrapper:
                 "type": "function",
                 "function": {
                     "name": tool["name"],
-                    "description": tool.get("short_desc", "")
-                    or tool.get("long_desc", ""),
+                    "description": tool.get("short_desc", "") or tool.get("long_desc", ""),
                     "parameters": tool.get("params", {}),
                 },
             }
@@ -101,9 +100,7 @@ class Tau2GymWrapper:
             info=info,
         )
 
-    def _parse_observation(
-        self, obs: str, terminated: bool = False
-    ) -> tuple[ObservationType, str]:
+    def _parse_observation(self, obs: str, terminated: bool = False) -> tuple[ObservationType, str]:
         """Parse tau2 observation into type and content."""
         if obs.startswith("user: "):
             return ObservationType.USER_MESSAGE, obs[6:]

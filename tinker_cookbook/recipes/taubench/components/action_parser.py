@@ -124,9 +124,7 @@ class ActionParser:
         """
         if parsed.action_type in (ActionType.TOOL_CALL, ActionType.ASK_SONNET):
             if parsed.tool_name and parsed.tool_args is not None:
-                return json.dumps(
-                    {"name": parsed.tool_name, "arguments": parsed.tool_args}
-                )
+                return json.dumps({"name": parsed.tool_name, "arguments": parsed.tool_args})
 
         # Check for <tool_call> tags in content and extract
         message = parsed.original_message

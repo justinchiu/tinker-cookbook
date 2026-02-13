@@ -141,7 +141,7 @@ class TestExtractFromRawJson:
 
     def test_raw_json_malformed_is_text(self, parser, mock_renderer):
         """Invalid JSON that looks like it might be JSON → TEXT."""
-        content = '{not json at all}'
+        content = "{not json at all}"
         mock_renderer.parse_response.return_value = (
             {"content": content},
             True,

@@ -247,9 +247,7 @@ class TestInit:
             wrapper = Tau2GymWrapper(domain="retail", task_id="task_001")
             assert wrapper.domain == "retail"
             assert wrapper.task_id == "task_001"
-            MockGym.assert_called_once_with(
-                domain="retail", task_id="task_001", user_llm=None
-            )
+            MockGym.assert_called_once_with(domain="retail", task_id="task_001", user_llm=None)
 
     def test_custom_user_llm(self):
         """Constructor passes user_llm to gym."""
@@ -257,9 +255,7 @@ class TestInit:
             "tinker_cookbook.recipes.taubench.components.tau2_gym_wrapper.AgentGymEnv"
         ) as MockGym:
             Tau2GymWrapper(domain="airline", task_id="t1", user_llm="gpt-4o")
-            MockGym.assert_called_once_with(
-                domain="airline", task_id="t1", user_llm="gpt-4o"
-            )
+            MockGym.assert_called_once_with(domain="airline", task_id="t1", user_llm="gpt-4o")
 
 
 # ---------------------------------------------------------------------------
