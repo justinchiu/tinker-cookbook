@@ -71,9 +71,7 @@ def _inject_ask_sonnet_calls(
 
     # Sample binary mask for eligible turns
     inject_mask = [rng.random() < injection_rate for _ in eligible_indices]
-    inject_set = {
-        idx for idx, do_inject in zip(eligible_indices, inject_mask) if do_inject
-    }
+    inject_set = {idx for idx, do_inject in zip(eligible_indices, inject_mask) if do_inject}
 
     # Build result with injections
     renderer = get_ask_sonnet_renderer(mode)
@@ -86,11 +84,7 @@ def _inject_ask_sonnet_calls(
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    ToolCall(
-                        function=ToolCall.FunctionBody(
-                            name="ask_sonnet", arguments="{}"
-                        )
-                    )
+                    ToolCall(function=ToolCall.FunctionBody(name="ask_sonnet", arguments="{}"))
                 ],
             }
             result.append(ask_sonnet_msg)
@@ -169,9 +163,7 @@ def _generate_advice_for_action(msg: dict) -> str:
                 # Dict format
                 tool_json = json.dumps(
                     {
-                        "name": tc.get(
-                            "name", tc.get("function", {}).get("name", "unknown")
-                        ),
+                        "name": tc.get("name", tc.get("function", {}).get("name", "unknown")),
                         "arguments": tc.get(
                             "arguments",
                             tc.get("function", {}).get("arguments", {}),
@@ -227,9 +219,7 @@ def _get_cached_tau2_system_prompt(domain: str) -> str:
     return _TAU2_SYSTEM_PROMPT_CACHE[domain]
 
 
-def _add_system_prompt_with_ask_sonnet(
-    messages: list[dict], domain: str
-) -> list[dict]:
+def _add_system_prompt_with_ask_sonnet(messages: list[dict], domain: str) -> list[dict]:
     """Add tau2 system prompt with ASK_SONNET_INSTRUCTION.
 
     Prepends a system message with:
@@ -293,14 +283,8 @@ def _split_datums_by_tasks(
     if use_official_test_split:
         test_ids = _get_task_ids_for_split(domain, "test")
         if test_ids:
-            test_data = [
-                datum for datum, task_id in datums_with_tasks if task_id in test_ids
-            ]
-            train_data = [
-                datum
-                for datum, task_id in datums_with_tasks
-                if task_id not in test_ids
-            ]
+            test_data = [datum for datum, task_id in datums_with_tasks if task_id in test_ids]
+            train_data = [datum for datum, task_id in datums_with_tasks if task_id not in test_ids]
             logger.info(
                 "Domain '%s': %d datums mapped to official test split",
                 domain,
@@ -318,9 +302,7 @@ def _split_datums_by_tasks(
         rng = random.Random(0)
         shuffled = datums_with_tasks.copy()
         rng.shuffle(shuffled)
-        num_test = (
-            max(1, int(len(shuffled) * fallback_test_fraction)) if shuffled else 0
-        )
+        num_test = max(1, int(len(shuffled) * fallback_test_fraction)) if shuffled else 0
         test_data = [datum for datum, _ in shuffled[:num_test]]
         train_data = [datum for datum, _ in shuffled[num_test:]]
         logger.info(
@@ -579,9 +561,7 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
         domain = data["info"]["environment_info"]["domain_name"]
         tools = _get_tau2_tools(domain)
         if tools:
-            logger.info(
-                f"Loaded {len(tools)} tool definitions for domain '{domain}'"
-            )
+            logger.info(f"Loaded {len(tools)} tool definitions for domain '{domain}'")
         else:
             logger.warning(
                 f"No tools available for domain '{domain}' - training without tool definitions"
@@ -609,9 +589,7 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
                 )
                 datums_with_tasks.append((datum, sim["task_id"]))
 
-        logger.info(
-            f"Loaded {len(datums_with_tasks)} conversations from {self.simulation_file}"
-        )
+        logger.info(f"Loaded {len(datums_with_tasks)} conversations from {self.simulation_file}")
 
         train_data, test_data = _split_datums_by_tasks(
             datums_with_tasks,
@@ -629,9 +607,7 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
 
         return SimpleSupervisedDataset(
             train_data, batch_size=self.common_config.batch_size
-        ), SimpleSupervisedDataset(
-            test_data, batch_size=self.common_config.batch_size
-        )
+        ), SimpleSupervisedDataset(test_data, batch_size=self.common_config.batch_size)
 
 
 @chz.chz
@@ -662,9 +638,7 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
             domain = data["info"]["environment_info"]["domain_name"]
             tools = _get_tau2_tools(domain)
             if tools:
-                logger.info(
-                    f"Loaded {len(tools)} tool definitions for domain '{domain}'"
-                )
+                logger.info(f"Loaded {len(tools)} tool definitions for domain '{domain}'")
             else:
                 logger.warning(
                     f"No tools available for domain '{domain}' - training without tool definitions"
@@ -703,9 +677,7 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
                     )
                     datums_with_tasks.append((datum, sim["task_id"]))
 
-        logger.info(
-            f"Loaded {len(datums_with_tasks)} conversations from {len(sim_files)} files"
-        )
+        logger.info(f"Loaded {len(datums_with_tasks)} conversations from {len(sim_files)} files")
 
         train_data, test_data = _split_datums_by_tasks(
             datums_with_tasks,
@@ -723,9 +695,7 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
 
         return SimpleSupervisedDataset(
             train_data, batch_size=self.common_config.batch_size
-        ), SimpleSupervisedDataset(
-            test_data, batch_size=self.common_config.batch_size
-        )
+        ), SimpleSupervisedDataset(test_data, batch_size=self.common_config.batch_size)
 
 
 @chz.chz
@@ -748,9 +718,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
         42  # Seed for reproducible injection (unused with dynamic injection)
     )
     ask_sonnet_injection_mode: AskSonnetMode = AskSonnetMode.DIRECT_INJECTION
-    train_on_ask_sonnet_only: bool = (
-        False  # Only train on ask_sonnet tool call turns
-    )
+    train_on_ask_sonnet_only: bool = False  # Only train on ask_sonnet tool call turns
 
     def __call__(self) -> tuple[SupervisedDataset, SupervisedDataset]:
         train_on_what = (
@@ -760,9 +728,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
         )
 
         # Load and normalize all conversations, split by domain
-        conversations_by_domain: dict[
-            str, list[tuple[ConversationRecord, str]]
-        ] = defaultdict(list)
+        conversations_by_domain: dict[str, list[tuple[ConversationRecord, str]]] = defaultdict(list)
         domain_tools: dict[str, list[dict] | None] = {}
         domain_counts: dict[str, int] = defaultdict(int)
 
@@ -788,16 +754,9 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                     )
 
                 # Add ask_sonnet tool if injection is enabled
-                if (
-                    self.ask_sonnet_injection_rate > 0
-                    and domain_tools[file_domain] is not None
-                ):
-                    domain_tools[file_domain] = domain_tools[file_domain] + [
-                        ASK_SONNET_TOOL
-                    ]
-                    logger.info(
-                        "Added ask_sonnet tool for domain '%s'", file_domain
-                    )
+                if self.ask_sonnet_injection_rate > 0 and domain_tools[file_domain] is not None:
+                    domain_tools[file_domain] = domain_tools[file_domain] + [ASK_SONNET_TOOL]
+                    logger.info("Added ask_sonnet tool for domain '%s'", file_domain)
 
             for sim in data["simulations"]:
                 messages = sim["messages"]
@@ -808,15 +767,11 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                         task_id=sim["task_id"],
                         domain=file_domain,
                     )
-                    conversations_by_domain[file_domain].append(
-                        (conv, sim["task_id"])
-                    )
+                    conversations_by_domain[file_domain].append((conv, sim["task_id"]))
                     domain_counts[file_domain] += 1
 
         total_convs = sum(domain_counts.values())
-        logger.info(
-            f"Loaded {total_convs} conversations from {len(self.simulation_files)} files"
-        )
+        logger.info(f"Loaded {total_convs} conversations from {len(self.simulation_files)} files")
         logger.info(f"Domain distribution: {dict(domain_counts)}")
 
         # Split into train/test by task IDs
@@ -827,15 +782,9 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
             test_ids = _get_task_ids_for_split(domain_name, "test")
             if test_ids:
                 domain_train = [
-                    conv
-                    for conv, task_id in convs_with_tasks
-                    if task_id not in test_ids
+                    conv for conv, task_id in convs_with_tasks if task_id not in test_ids
                 ]
-                domain_test = [
-                    conv
-                    for conv, task_id in convs_with_tasks
-                    if task_id in test_ids
-                ]
+                domain_test = [conv for conv, task_id in convs_with_tasks if task_id in test_ids]
                 logger.info(
                     "Domain '%s': %d train, %d test (official split)",
                     domain_name,

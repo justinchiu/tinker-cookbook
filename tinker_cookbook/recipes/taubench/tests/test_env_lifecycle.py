@@ -11,8 +11,7 @@ Key properties tested:
 8. Empty advisor response → error observation, episode continues
 """
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
