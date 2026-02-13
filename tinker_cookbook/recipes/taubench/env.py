@@ -130,9 +130,7 @@ class Tau2Env(Env):
 
         # Initialize message manager
         initial_user_content = (
-            initial_obs
-            if initial_obs
-            else "(Customer connected, please greet them)"
+            initial_obs if initial_obs else "(Customer connected, please greet them)"
         )
         self.messages = MessageManager(
             system_prompt=system_prompt,
@@ -150,10 +148,7 @@ class Tau2Env(Env):
         )
         self._current_obs_length = model_input.length
 
-        if (
-            self.max_context_length is not None
-            and model_input.length > self.max_context_length
-        ):
+        if self.max_context_length is not None and model_input.length > self.max_context_length:
             logger.warning(
                 "Initial observation length %d exceeds max %d for task %s",
                 model_input.length,
@@ -195,10 +190,7 @@ class Tau2Env(Env):
         parsed = self.action_parser.parse(action)
 
         # Check for ask_sonnet
-        if (
-            self.action_parser.is_ask_sonnet(parsed)
-            and self.external_llm is not None
-        ):
+        if self.action_parser.is_ask_sonnet(parsed) and self.external_llm is not None:
             # Check for consecutive ask_sonnet calls
             if self._last_action_was_ask_sonnet:
                 logger.warning(
@@ -250,9 +242,7 @@ class Tau2Env(Env):
                     "[Advisor Error]: The advisor returned an empty response. "
                     "Please proceed without advisor help."
                 )
-                self.messages.add_tool_result(
-                    error_msg, tool_call_id="ask_sonnet_call"
-                )
+                self.messages.add_tool_result(error_msg, tool_call_id="ask_sonnet_call")
                 next_obs = self.renderer.build_generation_prompt(
                     self.messages.messages, tools=self.tools
                 )
@@ -265,9 +255,7 @@ class Tau2Env(Env):
                 )
 
             # Add Sonnet's response using the renderer
-            self.messages.add_sonnet_response(
-                sonnet_response, self.ask_sonnet_renderer
-            )
+            self.messages.add_sonnet_response(sonnet_response, self.ask_sonnet_renderer)
 
             if self.ask_sonnet_renderer.should_return_early():
                 # Conditioning: return observation, wait for policy followup
@@ -284,9 +272,7 @@ class Tau2Env(Env):
             else:
                 # Direct: send Sonnet's response to tau2 immediately
                 self._last_action_was_ask_sonnet = False
-                action_str = self.ask_sonnet_renderer.get_tau2_action(
-                    sonnet_response, None
-                )
+                action_str = self.ask_sonnet_renderer.get_tau2_action(sonnet_response, None)
                 try:
                     json.loads(action_str)
                     assistant_content = f"<tool_call>\n{action_str}\n</tool_call>"
@@ -308,9 +294,7 @@ class Tau2Env(Env):
         if result.raw_obs and not (result.terminated or result.truncated):
             self._process_observation(result)
 
-        next_obs = self.renderer.build_generation_prompt(
-            self.messages.messages, tools=self.tools
-        )
+        next_obs = self.renderer.build_generation_prompt(self.messages.messages, tools=self.tools)
         self._current_obs_length = next_obs.length
         self.policy_input_tokens += next_obs.length
 
@@ -320,10 +304,7 @@ class Tau2Env(Env):
         if episode_done:
             self._maybe_capture_tau2_user_costs(result.info)
 
-        if (
-            self.max_context_length is not None
-            and next_obs.length > self.max_context_length
-        ):
+        if self.max_context_length is not None and next_obs.length > self.max_context_length:
             logger.warning(
                 "Context length %d exceeded max %d for task %s, terminating",
                 next_obs.length,
@@ -406,10 +387,8 @@ class Tau2Env(Env):
             "sonnet_output_tokens": self.sonnet_output_tokens,
             "policy_input_tokens": self.policy_input_tokens,
             "policy_output_tokens": self.policy_output_tokens,
-            "total_sonnet_tokens": self.sonnet_input_tokens
-            + self.sonnet_output_tokens,
-            "total_policy_tokens": self.policy_input_tokens
-            + self.policy_output_tokens,
+            "total_sonnet_tokens": self.sonnet_input_tokens + self.sonnet_output_tokens,
+            "total_policy_tokens": self.policy_input_tokens + self.policy_output_tokens,
             "tau2_user_input_tokens": self.tau2_user_input_tokens,
             "tau2_user_output_tokens": self.tau2_user_output_tokens,
             "tau2_user_cost_usd": self.tau2_user_cost_usd,
@@ -519,16 +498,12 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
             ask_sonnet_count = tau2_env.ask_sonnet_call_count
             ask_sonnet_penalty = self.ask_sonnet_penalty * ask_sonnet_count
             sonnet_token_penalty = self.sonnet_token_penalty_per_1k * (
-                (tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens)
-                / 1000.0
+                (tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens) / 1000.0
             )
             tau2_user_token_penalty = self.tau2_user_token_penalty_per_1k * (
-                (tau2_env.tau2_user_input_tokens + tau2_env.tau2_user_output_tokens)
-                / 1000.0
+                (tau2_env.tau2_user_input_tokens + tau2_env.tau2_user_output_tokens) / 1000.0
             )
-            tau2_user_cost_penalty = (
-                self.tau2_user_cost_penalty * tau2_env.tau2_user_cost_usd
-            )
+            tau2_user_cost_penalty = self.tau2_user_cost_penalty * tau2_env.tau2_user_cost_usd
             total_penalty = (
                 ask_sonnet_penalty
                 + sonnet_token_penalty
@@ -544,10 +519,8 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
                 "sonnet_output_tokens": tau2_env.sonnet_output_tokens,
                 "policy_input_tokens": tau2_env.policy_input_tokens,
                 "policy_output_tokens": tau2_env.policy_output_tokens,
-                "total_sonnet_tokens": tau2_env.sonnet_input_tokens
-                + tau2_env.sonnet_output_tokens,
-                "total_policy_tokens": tau2_env.policy_input_tokens
-                + tau2_env.policy_output_tokens,
+                "total_sonnet_tokens": tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens,
+                "total_policy_tokens": tau2_env.policy_input_tokens + tau2_env.policy_output_tokens,
                 "tau2_user_input_tokens": tau2_env.tau2_user_input_tokens,
                 "tau2_user_output_tokens": tau2_env.tau2_user_output_tokens,
                 "tau2_user_cost_usd": tau2_env.tau2_user_cost_usd,
@@ -629,9 +602,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     model_name_for_tokenizer: str
     renderer_name: str | None = None
     group_size: int = 1
-    domain: Literal[
-        "telecom", "airline", "retail", "mock", "telecom-workflow", "all"
-    ] = "all"
+    domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
     seed: int = 0
     test_group_size: int = 1
     num_epochs: int = 1
@@ -653,9 +624,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         tokenizer = get_tokenizer(self.model_name_for_tokenizer)
 
         if self.renderer_name is None:
-            renderer_name = get_recommended_renderer_name(
-                self.model_name_for_tokenizer
-            )
+            renderer_name = get_recommended_renderer_name(self.model_name_for_tokenizer)
         else:
             renderer_name = self.renderer_name
 
@@ -711,9 +680,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
         TRAIN_SPLIT = "train"
         TEST_SPLIT = "test"
 
-        def load_tasks_for_domain(
-            domain_name: str, split_name: str | None
-        ) -> list:
+        def load_tasks_for_domain(domain_name: str, split_name: str | None) -> list:
             tasks_loader = reg.registry.get_tasks_loader(domain_name)
             if split_name is None:
                 tasks = tasks_loader()

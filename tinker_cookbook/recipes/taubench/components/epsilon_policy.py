@@ -78,10 +78,8 @@ class EpsilonAskSonnetMetrics:
             "epsilon_policy/forced_ask_sonnet_total": self.total_forced_ask_sonnet,
             "epsilon_policy/policy_ask_sonnet_total": self.total_policy_ask_sonnet,
             "epsilon_policy/policy_other_total": self.total_policy_other,
-            "epsilon_policy/forced_ask_sonnet_rate": self.total_forced_ask_sonnet
-            / total,
-            "epsilon_policy/policy_ask_sonnet_rate": self.total_policy_ask_sonnet
-            / total,
+            "epsilon_policy/forced_ask_sonnet_rate": self.total_forced_ask_sonnet / total,
+            "epsilon_policy/policy_ask_sonnet_rate": self.total_policy_ask_sonnet / total,
             "epsilon_policy/policy_other_rate": self.total_policy_other / total,
             "epsilon_policy/total_turns": self.total_turns,
             "epsilon_policy/total_episodes": self.total_episodes,
@@ -146,21 +144,15 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     _tokenizer: object = field(default=None, init=False, repr=False)
     _ask_sonnet_tokens: list[int] = field(default=None, init=False, repr=False)
     _current_step: int = field(default=0, init=False)
-    _metrics: EpsilonAskSonnetMetrics = field(
-        default_factory=EpsilonAskSonnetMetrics, init=False
-    )
+    _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
 
     def __post_init__(self) -> None:
         self._rng = random.Random(self.seed)
         self._tokenizer = get_tokenizer(self.model_name)
 
         # Pre-compute ask_sonnet tokens
-        ask_sonnet_str = (
-            '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'
-        )
-        self._ask_sonnet_tokens = self._tokenizer.encode(
-            ask_sonnet_str, add_special_tokens=False
-        )
+        ask_sonnet_str = '<tool_call>\n{"name": "ask_sonnet", "args": {}}\n</tool_call>'
+        self._ask_sonnet_tokens = self._tokenizer.encode(ask_sonnet_str, add_special_tokens=False)
 
         logger.info(
             "EpsilonAskSonnetPolicy initialized: mode=%s, initial_epsilon=%.3f, "
@@ -245,7 +237,6 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         turn_count = ctx["assistant_turn_count"]
         is_first_turn = turn_count == 0
 
-
         # Never force consecutive ask_sonnet calls
         if ctx["last_action_was_ask_sonnet"]:
             return False
@@ -264,9 +255,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
 
         return False
 
-    async def _get_logprobs_for_forced_action(
-        self, observation: tinker.ModelInput
-    ) -> list[float]:
+    async def _get_logprobs_for_forced_action(self, observation: tinker.ModelInput) -> list[float]:
         """Get the model's logprobs for the ask_sonnet tokens."""
         ob_tokens = observation.to_ints()
         full_tokens = ob_tokens + self._ask_sonnet_tokens
@@ -282,9 +271,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     ) -> TokensWithLogprobs:
         """Sample action, potentially forcing ask_sonnet based on exploration mode."""
         if self.sampling_client is None:
-            raise ValueError(
-                "sampling_client must be set before calling epsilon policy"
-            )
+            raise ValueError("sampling_client must be set before calling epsilon policy")
 
         ctx = _rollout_ctx.get()
         if ctx is None:
@@ -315,9 +302,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
             )
 
         # Sample from the model
-        base_policy = TinkerTokenCompleter(
-            self.sampling_client, self.max_tokens, self.temperature
-        )
+        base_policy = TinkerTokenCompleter(self.sampling_client, self.max_tokens, self.temperature)
         result = await base_policy(model_input, stop)
         ctx["assistant_turn_count"] += 1
 
