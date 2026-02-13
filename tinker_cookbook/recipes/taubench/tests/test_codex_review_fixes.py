@@ -164,7 +164,9 @@ class TestForcedAskSonnetPayload:
                 lambda _: mock_tokenizer,
             )
 
-            EpsilonAskSonnetPolicy(model_name="test", max_tokens=100)  # side effect: calls tokenizer.encode
+            EpsilonAskSonnetPolicy(
+                model_name="test", max_tokens=100
+            )  # side effect: calls tokenizer.encode
 
         # Verify the template string uses "arguments", not "args"
         encoded_str = mock_tokenizer.encode.call_args[0][0]
