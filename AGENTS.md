@@ -124,6 +124,17 @@ Agents often struggle with the nested type hierarchy. Key resources:
 
 ---
 
+## Wandb Projects
+
+Use these wandb projects (entity: `percepta-ai`):
+
+- **`tau2-rl`** — All RL training runs (with or without injection/exploration)
+- **`tau2-sft`** — All SFT training runs
+
+Do not use `tau2-migration-debug` for new runs (legacy, contains early debugging runs).
+
+---
+
 ## Testing
 
 ```bash

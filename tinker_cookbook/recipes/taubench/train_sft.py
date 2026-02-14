@@ -68,7 +68,7 @@ class CLIConfig:
 
     # Logging
     log_path: str | None = None
-    wandb_project: str = "tau2-sft-experiments"
+    wandb_project: str = "tau2-sft"
     wandb_name: str = "qwen3-30b-a3b-instruct-alldomains"
     behavior_if_log_dir_exists: cli_utils.LogdirBehavior = "ask"
 
