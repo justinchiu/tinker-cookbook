@@ -125,11 +125,6 @@ class EnvGroupBuilder(ABC):
         """
         return []
 
-    @property
-    def strategy_id(self) -> str | None:
-        """ExIt strategy identifier. Override in subclasses to enable multi-strategy training."""
-        return None
-
 
 @dataclass
 class TrajectoryGroup:

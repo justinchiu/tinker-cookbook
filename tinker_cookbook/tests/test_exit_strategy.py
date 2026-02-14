@@ -50,6 +50,46 @@ class TestStrategyIdOptional:
         assert group.strategy_id == "main"
 
 
+class TestDataclassSubclassCanOverrideStrategyId:
+    def test_frozen_dataclass_subclass_with_strategy_id_field(self):
+        """A frozen dataclass subclass of EnvGroupBuilder can define strategy_id as a field."""
+        from dataclasses import dataclass
+        from collections.abc import Sequence
+        from tinker_cookbook.rl.types import Env, EnvGroupBuilder
+
+        @dataclass(frozen=True)
+        class MyBuilder(EnvGroupBuilder):
+            strategy_id: str | None = None
+
+            async def make_envs(self) -> Sequence[Env]:
+                return []
+
+        builder = MyBuilder(strategy_id="fast")
+        assert builder.strategy_id == "fast"
+
+        builder_none = MyBuilder()
+        assert builder_none.strategy_id is None
+
+    def test_chz_subclass_with_strategy_id_field(self):
+        """A chz subclass of EnvGroupBuilder can define strategy_id as a field."""
+        import chz
+        from collections.abc import Sequence
+        from tinker_cookbook.rl.types import Env, EnvGroupBuilder
+
+        @chz.chz
+        class MyChzBuilder(EnvGroupBuilder):
+            strategy_id: str | None = None
+
+            async def make_envs(self) -> Sequence[Env]:
+                return []
+
+        builder = MyChzBuilder(strategy_id="slow")
+        assert builder.strategy_id == "slow"
+
+        builder_none = MyChzBuilder()
+        assert builder_none.strategy_id is None
+
+
 class TestStrategyWeightScaling:
     def test_single_strategy_weight(self):
         """Advantages are scaled by weight / count for a single strategy."""
