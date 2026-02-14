@@ -3,6 +3,8 @@
 import logging
 from dataclasses import dataclass
 
+from typing import Any
+
 import litellm
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
@@ -15,9 +17,9 @@ def is_retryable_error(exception: BaseException) -> bool:
     """Check if an exception is retryable."""
     # Build exception tuple dynamically to handle litellm version differences
     retryable_types: list[type] = [
-        litellm.APIConnectionError,
-        litellm.InternalServerError,
-        litellm.RateLimitError,
+        litellm.APIConnectionError,  # type: ignore[reportPrivateImportUsage]
+        litellm.InternalServerError,  # type: ignore[reportPrivateImportUsage]
+        litellm.RateLimitError,  # type: ignore[reportPrivateImportUsage]
     ]
     for attr_name in ("BadGatewayError", "Timeout"):
         cls = getattr(litellm, attr_name, None)
@@ -85,7 +87,7 @@ class ExternalLLMClient:
         )
 
         try:
-            response = await litellm.acompletion(
+            raw_response = await litellm.acompletion(
                 model=self.model,
                 messages=messages,
                 max_tokens=self.max_tokens,
@@ -98,6 +100,7 @@ class ExternalLLMClient:
             self._log_error(messages, e)
             raise
 
+        response: Any = raw_response
         raw_message = response.choices[0].message
         content = raw_message.content or ""
 

@@ -9,6 +9,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import tau2.registry as reg
 
@@ -22,6 +23,7 @@ from tinker_cookbook.recipes.taubench.components import (
 from tinker_cookbook.recipes.taubench.env import construct_tau2_env, _openai_tools_to_tool_specs
 from tinker_cookbook import renderers
 from tinker_cookbook.renderers import TrainOnWhat, ToolCall
+from tinker_cookbook.renderers.base import Message
 from tinker_cookbook.supervised.common import datum_from_model_input_weights
 from tinker_cookbook.supervised.types import ChatDatasetBuilder, SupervisedDataset
 
@@ -223,7 +225,7 @@ def _get_tau2_system_prompt(domain: str) -> str:
 
         # Create a temporary env to get the policy
         tasks_loader = reg.registry.get_tasks_loader(domain)
-        tasks = tasks_loader()
+        tasks = tasks_loader(None)
         if tasks:
             task_id = tasks[0].id
             env = AgentGymEnv(domain=domain, task_id=task_id)
@@ -449,7 +451,7 @@ class DynamicInjectionDataset(SupervisedDataset):
             tools = self.domain_tools.get(conv.domain)
             messages = _inject_tools_into_messages(self.renderer, messages, tools)
             model_input, weights = self.renderer.build_supervised_example(
-                messages, train_on_what=self.train_on_what
+                cast(list[Message], messages), train_on_what=self.train_on_what
             )
             datum = datum_from_model_input_weights(model_input, weights, self.max_length)
             datums.append(datum)
@@ -495,17 +497,19 @@ def _get_tau2_tools(domain: str, task_id: str | None = None) -> list[dict] | Non
     # Use a default task if none provided
     if task_id is None:
         tasks_loader = reg.registry.get_tasks_loader(domain)
-        tasks = tasks_loader()
+        tasks = tasks_loader(None)
         if not tasks:
             logger.warning(f"No tasks found for domain '{domain}'")
             return None
-        task_id = tasks[0].id
+        resolved_task_id: str = tasks[0].id
+    else:
+        resolved_task_id = task_id
 
     # Create env using the same method as RL training
     # Use Qwen3 as default for consistency
     env = construct_tau2_env(
         domain=domain,
-        task_id=task_id,
+        task_id=resolved_task_id,
         model_name="Qwen/Qwen3-30B-A3B-Instruct-2507",
     )
 
@@ -615,7 +619,7 @@ class Tau2SimulationBuilder(ChatDatasetBuilder):
                 # Inject tools and convert to Datum
                 messages_with_tools = _inject_tools_into_messages(self.renderer, normalized, tools)
                 model_input, weights = self.renderer.build_supervised_example(
-                    messages_with_tools, train_on_what=train_on_what
+                    cast(list[Message], messages_with_tools), train_on_what=train_on_what
                 )
                 datum = datum_from_model_input_weights(
                     model_input, weights, self.common_config.max_length
@@ -706,7 +710,7 @@ class Tau2SimulationDirectoryBuilder(ChatDatasetBuilder):
                         self.renderer, normalized, tools
                     )
                     model_input, weights = self.renderer.build_supervised_example(
-                        messages_with_tools, train_on_what=train_on_what
+                        cast(list[Message], messages_with_tools), train_on_what=train_on_what
                     )
                     datum = datum_from_model_input_weights(
                         model_input, weights, self.common_config.max_length
@@ -874,7 +878,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
                 tools = domain_tools.get(conv.domain)
                 messages = _inject_tools_into_messages(self.renderer, messages, tools)
                 model_input, weights = self.renderer.build_supervised_example(
-                    messages,
+                    cast(list[Message], messages),
                     train_on_what=train_on_what,
                 )
                 datum = datum_from_model_input_weights(
@@ -909,7 +913,7 @@ class Tau2SimulationFilesBuilder(ChatDatasetBuilder):
             tools = domain_tools.get(conv.domain)
             messages = _inject_tools_into_messages(self.renderer, messages, tools)
             model_input, weights = self.renderer.build_supervised_example(
-                messages,
+                cast(list[Message], messages),
                 train_on_what=train_on_what,
             )
             datum = datum_from_model_input_weights(

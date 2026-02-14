@@ -3,7 +3,7 @@
 import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tinker_cookbook.recipes.taubench.components.types import (
     ActionType,
@@ -33,7 +33,8 @@ class ActionParser:
             ParsedAction with type, content, and tool info if applicable
         """
         # Use renderer to parse response
-        message, parse_success = self.renderer.parse_response(action_tokens)
+        parsed_message, parse_success = self.renderer.parse_response(action_tokens)
+        message: dict[str, Any] = dict(parsed_message)
         content = message.get("content", "")
 
         # Normalize list content (e.g., from thinking parts) to string
@@ -63,7 +64,7 @@ class ActionParser:
             original_message=message,
         )
 
-    def _extract_tool_call(self, message: dict) -> tuple[str | None, dict | None]:
+    def _extract_tool_call(self, message: dict[str, Any]) -> tuple[str | None, dict | None]:
         """
         Extract tool call info from message in various formats.
 

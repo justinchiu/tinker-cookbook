@@ -10,6 +10,7 @@ import logging
 import random
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Any
 
 import tinker
 
@@ -71,7 +72,7 @@ class EpsilonAskSonnetMetrics:
         self.episode_policy_other = 0
         self.episode_turns = 0
 
-    def get_metrics(self) -> dict[str, float]:
+    def get_metrics(self) -> dict[str, float | str]:
         """Get metrics dict for logging."""
         total = self.total_turns or 1  # Avoid division by zero
         return {
@@ -137,12 +138,12 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
     mode: ExplorationMode = ExplorationMode.EPSILON_GREEDY
 
     # Sampling client - set this before each rollout batch
-    sampling_client: tinker.SamplingClient = field(default=None, repr=False)
+    sampling_client: tinker.SamplingClient | None = field(default=None, repr=False)
 
     # Internal state
-    _rng: random.Random = field(default=None, init=False, repr=False)
-    _tokenizer: object = field(default=None, init=False, repr=False)
-    _ask_sonnet_tokens: list[int] = field(default=None, init=False, repr=False)
+    _rng: random.Random | None = field(default=None, init=False, repr=False)
+    _tokenizer: Any = field(default=None, init=False, repr=False)
+    _ask_sonnet_tokens: list[int] | None = field(default=None, init=False, repr=False)
     _current_step: int = field(default=0, init=False)
     _metrics: EpsilonAskSonnetMetrics = field(default_factory=EpsilonAskSonnetMetrics, init=False)
 
@@ -242,6 +243,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
             return False
 
         if self.mode == ExplorationMode.EPSILON_GREEDY:
+            assert self._rng is not None
             return not is_first_turn and self._rng.random() < self.current_epsilon
 
         elif self.mode == ExplorationMode.RAO_BLACKWELL:
@@ -257,6 +259,8 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
 
     async def _get_logprobs_for_forced_action(self, observation: tinker.ModelInput) -> list[float]:
         """Get the model's logprobs for the ask_sonnet tokens."""
+        assert self._ask_sonnet_tokens is not None
+        assert self.sampling_client is not None
         ob_tokens = observation.to_ints()
         full_tokens = ob_tokens + self._ask_sonnet_tokens
         full_prompt = tinker.ModelInput.from_ints(tokens=full_tokens)
@@ -272,6 +276,7 @@ class EpsilonAskSonnetPolicy(TokenCompleter):
         """Sample action, potentially forcing ask_sonnet based on exploration mode."""
         if self.sampling_client is None:
             raise ValueError("sampling_client must be set before calling epsilon policy")
+        assert self._ask_sonnet_tokens is not None
 
         ctx = _rollout_ctx.get()
         if ctx is None:

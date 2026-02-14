@@ -11,6 +11,7 @@ Key properties tested:
 8. Empty advisor response → error observation, episode continues
 """
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,7 +24,7 @@ from tinker_cookbook.recipes.taubench.components.types import (
 from tinker_cookbook.recipes.taubench.env import Tau2Env
 
 
-def _make_env(**overrides) -> Tau2Env:
+def _make_env(**overrides: Any) -> Any:
     """Create a Tau2Env with all dependencies mocked out.
 
     Returns a Tau2Env created via __new__ with mocked internals.

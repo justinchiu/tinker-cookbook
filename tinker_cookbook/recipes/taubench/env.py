@@ -5,7 +5,7 @@ import json
 import logging
 import math
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Any, Literal, Sequence, cast
 
 import chz
 import tau2.registry as reg
@@ -29,7 +29,7 @@ from tinker_cookbook.recipes.taubench.components import (
     get_ask_sonnet_renderer,
 )
 from tinker_cookbook.renderers import Renderer, get_renderer
-from tinker_cookbook.renderers.base import ToolSpec
+from tinker_cookbook.renderers.base import Message, ToolSpec
 from tinker_cookbook.rl.types import (
     Action,
     Env,
@@ -42,6 +42,8 @@ from tinker_cookbook.rl.types import (
 from tinker_cookbook.tokenizer_utils import get_tokenizer
 
 logger = logging.getLogger(__name__)
+
+Tau2Domain = Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"]
 
 
 def _openai_tools_to_tool_specs(tools: list[dict]) -> list[ToolSpec]:
@@ -150,7 +152,8 @@ class Tau2Env(Env):
         # definitions into the system prompt via the renderer's native format.
         tool_specs = _openai_tools_to_tool_specs(self.tools)
         prefix_messages = renderer.create_conversation_prefix_with_tools(tool_specs, system_prompt)
-        system_prompt_with_tools = prefix_messages[0].get("content", system_prompt)
+        raw_content = prefix_messages[0].get("content", system_prompt)
+        system_prompt_with_tools = raw_content if isinstance(raw_content, str) else system_prompt
 
         # Initialize action parser
         self.action_parser = ActionParser(renderer)
@@ -164,9 +167,9 @@ class Tau2Env(Env):
             initial_user_content=initial_user_content,
         )
 
-    def _build_prompt(self, messages: list[dict]):
+    def _build_prompt(self, messages: list[dict[str, Any]]):
         """Build generation prompt. Tools are already in the system prompt."""
-        return self.renderer.build_generation_prompt(messages)
+        return self.renderer.build_generation_prompt(cast(list[Message], messages))
 
     @property
     def stop_condition(self) -> StopCondition:
@@ -249,6 +252,7 @@ class Tau2Env(Env):
             # Call external LLM with usage tracking.
             # Pass the clean system prompt (without Qwen3 tool format) because
             # render_for_advisor adds its own tool descriptions for the advisor.
+            assert self.ask_sonnet_renderer is not None
             advisor_messages = self.ask_sonnet_renderer.render_for_advisor(
                 self.messages.messages,
                 self.tools,
@@ -468,7 +472,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
     task_id: str
     renderer: renderers.Renderer
     num_envs: int
-    actual_domain: str = None
+    actual_domain: str | None = None
     max_context_length: int | None = None
     # External LLM configuration
     external_llm_model: str | None = None
@@ -517,7 +521,7 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
         """Compute rewards with penalty for ask_sonnet calls."""
         results = []
         for env in env_group:
-            tau2_env: Tau2Env = env
+            tau2_env = cast(Tau2Env, env)
             ask_sonnet_count = tau2_env.ask_sonnet_call_count
             ask_sonnet_penalty = self.ask_sonnet_penalty * ask_sonnet_count
             sonnet_token_penalty = self.sonnet_token_penalty_per_1k * (
@@ -625,7 +629,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
     model_name_for_tokenizer: str
     renderer_name: str | None = None
     group_size: int = 1
-    domain: Literal["telecom", "airline", "retail", "mock", "telecom-workflow", "all"] = "all"
+    domain: Tau2Domain = "all"
     seed: int = 0
     test_group_size: int = 1
     num_epochs: int = 1
@@ -707,11 +711,11 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
             """Load tasks, returning (tasks, used_official_split)."""
             tasks_loader = reg.registry.get_tasks_loader(domain_name)
             if split_name is None:
-                tasks = tasks_loader()
+                tasks = tasks_loader(None)
                 used_split = False
             else:
                 try:
-                    tasks = tasks_loader(task_split_name=split_name)
+                    tasks = tasks_loader(split_name)
                     used_split = True
                 except TypeError:
                     logger.warning(
@@ -719,7 +723,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
                         domain_name,
                         split_name,
                     )
-                    tasks = tasks_loader()
+                    tasks = tasks_loader(None)
                     used_split = False
                 except ValueError as exc:
                     logger.warning(
@@ -728,7 +732,7 @@ class Tau2DatasetBuilder(RLDatasetBuilder):
                         split_name,
                         exc,
                     )
-                    tasks = tasks_loader()
+                    tasks = tasks_loader(None)
                     used_split = False
 
             for task in tasks:
@@ -813,7 +817,7 @@ def build_tau_eval_builders(
         model_name_for_tokenizer=model_name,
         renderer_name=renderer_name,
         group_size=max(1, group_size),
-        domain=domain,
+        domain=cast(Tau2Domain, domain),
         seed=task_seed,
         test_group_size=max(1, group_size),
         num_epochs=1,
@@ -823,7 +827,8 @@ def build_tau_eval_builders(
         ask_sonnet_mode=ask_sonnet_mode,
     )
 
-    _, raw_test_dataset = asyncio.run(eval_dataset_builder())
+    _, raw_test_dataset_base = asyncio.run(eval_dataset_builder())
+    raw_test_dataset = cast(Tau2Dataset, raw_test_dataset_base)
     tasks = list(raw_test_dataset.tasks)
     if num_tasks is not None:
         tasks = tasks[: max(1, num_tasks)]

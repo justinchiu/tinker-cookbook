@@ -16,12 +16,13 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import cast
 
 import chz
 import tinker
 from tinker_cookbook import model_info
 from tinker_cookbook.recipes.taubench.components import AskSonnetMode, RolloutLogger
-from tinker_cookbook.recipes.taubench.env import Tau2Dataset, Tau2DatasetBuilder
+from tinker_cookbook.recipes.taubench.env import Tau2Dataset, Tau2DatasetBuilder, Tau2Domain
 from tinker_cookbook.rl.metric_util import RLTestSetEvaluator
 from tinker_cookbook.utils import logtree, ml_log
 
@@ -85,7 +86,7 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
         model_name_for_tokenizer=config.model_name,
         renderer_name=renderer_name,
         group_size=config.group_size,
-        domain=config.domain,
+        domain=cast(Tau2Domain, config.domain),
         seed=config.task_seed,
         test_group_size=config.group_size,
         num_epochs=1,
@@ -95,8 +96,8 @@ async def run_evaluation(config: CLIConfig) -> dict[str, float]:
         ask_sonnet_mode=config.ask_sonnet_mode,
     )
 
-    _, raw_test_dataset = await dataset_builder()
-
+    _, raw_test_dataset_base = await dataset_builder()
+    raw_test_dataset = cast(Tau2Dataset, raw_test_dataset_base)
     tasks = list(raw_test_dataset.tasks)
     if config.num_tasks is not None:
         tasks = tasks[: config.num_tasks]
@@ -221,7 +222,7 @@ def main():
 
         if cli_config.wandb_project:
             ml_logger = ml_log.setup_logging(
-                log_path=cli_config.log_path,
+                log_dir=cli_config.log_path or "",
                 wandb_project=cli_config.wandb_project,
                 wandb_name=cli_config.wandb_name
                 or f"tau2-eval-{cli_config.domain}-{datetime.now().strftime('%Y%m%d-%H%M')}",

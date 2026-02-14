@@ -12,8 +12,10 @@ Key properties tested:
 
 import json
 import random
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import tinker
 
 from tinker_cookbook.renderers import ToolCall
 
@@ -345,7 +347,7 @@ class TestGenerateAdvice:
 class TestSimpleSupervisedDataset:
     def test_get_batch_returns_correct_slice(self):
         """get_batch(i) returns data[i*batch_size : (i+1)*batch_size]."""
-        data = [MagicMock() for _ in range(10)]
+        data = cast(list[tinker.Datum], [MagicMock() for _ in range(10)])
         ds = SimpleSupervisedDataset(data, batch_size=3)
         batch = ds.get_batch(0)
         assert len(batch) == 3
@@ -353,31 +355,31 @@ class TestSimpleSupervisedDataset:
 
     def test_get_batch_last_batch_partial(self):
         """Last batch may be smaller than batch_size."""
-        data = [MagicMock() for _ in range(10)]
+        data = cast(list[tinker.Datum], [MagicMock() for _ in range(10)])
         ds = SimpleSupervisedDataset(data, batch_size=3)
         batch = ds.get_batch(3)  # index 3 → [9:12] but only 1 item
         assert len(batch) == 1
 
     def test_len_is_floor_division(self):
         """len(dataset) = len(data) // batch_size."""
-        data = [MagicMock() for _ in range(10)]
+        data = cast(list[tinker.Datum], [MagicMock() for _ in range(10)])
         ds = SimpleSupervisedDataset(data, batch_size=3)
         assert len(ds) == 3  # 10 // 3 = 3
 
     def test_set_epoch_shuffles(self):
         """set_epoch should shuffle data deterministically."""
-        data = list(range(20))
+        data = cast(list[tinker.Datum], list(range(20)))
         ds = SimpleSupervisedDataset(data, batch_size=5)
         ds.set_epoch(42)
         shuffled = [ds.get_batch(i) for i in range(len(ds))]
         flat = [item for batch in shuffled for item in batch]
         # Should be a permutation, not the original order
-        assert flat != list(range(20))
-        assert sorted(flat) == list(range(20))
+        assert flat != cast(list[tinker.Datum], list(range(20)))
+        assert sorted(cast(list[Any], flat)) == list(range(20))
 
     def test_set_epoch_deterministic(self):
         """Same seed produces same shuffle."""
-        data = list(range(20))
+        data = cast(list[tinker.Datum], list(range(20)))
         ds1 = SimpleSupervisedDataset(data, batch_size=5)
         ds2 = SimpleSupervisedDataset(data, batch_size=5)
         ds1.set_epoch(99)
@@ -387,7 +389,7 @@ class TestSimpleSupervisedDataset:
 
     def test_different_seeds_different_order(self):
         """Different seeds produce different shuffles."""
-        data = list(range(20))
+        data = cast(list[tinker.Datum], list(range(20)))
         ds = SimpleSupervisedDataset(data, batch_size=5)
         ds.set_epoch(1)
         order1 = [ds.get_batch(i) for i in range(len(ds))]
@@ -536,12 +538,15 @@ class TestDynamicInjectionDataset:
 class TestSplitDatumsByTasks:
     def test_official_split_used_when_available(self):
         """When official test split exists, use it."""
-        datums_with_tasks = [
-            (MagicMock(), "task_1"),
-            (MagicMock(), "task_2"),
-            (MagicMock(), "task_3"),
-            (MagicMock(), "task_4"),
-        ]
+        datums_with_tasks: list[tuple[tinker.Datum, str]] = cast(
+            list[tuple[tinker.Datum, str]],
+            [
+                (MagicMock(), "task_1"),
+                (MagicMock(), "task_2"),
+                (MagicMock(), "task_3"),
+                (MagicMock(), "task_4"),
+            ],
+        )
 
         with patch(
             "tinker_cookbook.recipes.taubench.sft_dataset._get_task_ids_for_split"
@@ -559,7 +564,10 @@ class TestSplitDatumsByTasks:
 
     def test_fallback_random_split(self):
         """When no official split, fall back to random split."""
-        datums_with_tasks = [(MagicMock(), f"task_{i}") for i in range(10)]
+        datums_with_tasks = cast(
+            list[tuple[tinker.Datum, str]],
+            [(MagicMock(), f"task_{i}") for i in range(10)],
+        )
 
         with patch(
             "tinker_cookbook.recipes.taubench.sft_dataset._get_task_ids_for_split"
@@ -577,7 +585,10 @@ class TestSplitDatumsByTasks:
 
     def test_no_split_configured(self):
         """With no official split and no fallback, all goes to train."""
-        datums_with_tasks = [(MagicMock(), f"task_{i}") for i in range(5)]
+        datums_with_tasks = cast(
+            list[tuple[tinker.Datum, str]],
+            [(MagicMock(), f"task_{i}") for i in range(5)],
+        )
 
         with patch(
             "tinker_cookbook.recipes.taubench.sft_dataset._get_task_ids_for_split"
@@ -595,7 +606,10 @@ class TestSplitDatumsByTasks:
 
     def test_fallback_split_deterministic(self):
         """Fallback random split should be deterministic (seed=0)."""
-        datums = [(MagicMock(), f"task_{i}") for i in range(20)]
+        datums = cast(
+            list[tuple[tinker.Datum, str]],
+            [(MagicMock(), f"task_{i}") for i in range(20)],
+        )
 
         with patch(
             "tinker_cookbook.recipes.taubench.sft_dataset._get_task_ids_for_split"

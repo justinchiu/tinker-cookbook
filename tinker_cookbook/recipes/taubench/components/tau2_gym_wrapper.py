@@ -40,7 +40,8 @@ class Tau2GymWrapper:
         return obs
 
     def get_system_prompt(self) -> str:
-        return self.env._get_system_prompt()
+        _get_system_prompt = getattr(self.env, "_get_system_prompt")
+        return _get_system_prompt()
 
     def get_tools(self) -> list[dict]:
         """Get tools from the gym in OpenAI format."""

@@ -8,6 +8,7 @@ Key properties tested:
 5. Return value is (-total_penalty, metrics) for each env
 """
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,7 @@ def _make_mock_env(
     tau2_user_input_tokens: int = 0,
     tau2_user_output_tokens: int = 0,
     tau2_user_cost_usd: float = 0.0,
-):
+) -> Any:
     """Create a mock Tau2Env with specified attributes."""
     env = MagicMock()
     env.ask_sonnet_call_count = ask_sonnet_call_count
@@ -40,9 +41,9 @@ def _make_mock_env(
     return env
 
 
-def _make_builder(**kwargs) -> Tau2EnvGroupBuilder:
+def _make_builder(**kwargs: Any) -> Tau2EnvGroupBuilder:
     """Create a Tau2EnvGroupBuilder with default values, overriding kwargs."""
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         domain="retail",
         task_id="t1",
         renderer=MagicMock(),

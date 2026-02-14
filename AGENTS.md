@@ -142,6 +142,25 @@ For debugging, shrink workloads via `n_batches`, `batch_size`, `group_size` in d
 
 ---
 
+## Pre-commit
+
+Pre-commit hooks are configured in `.pre-commit-config.yaml` (ruff lint + format, trailing whitespace, large file check).
+
+```bash
+# Install hooks (once per clone/worktree)
+uv run pre-commit install
+
+# Run manually on all files
+uv run pre-commit run --all-files
+
+# Run on staged files only (this is what the git hook does)
+uv run pre-commit run
+```
+
+Hooks run automatically on `git commit`. If a hook fails, it will fix the file in-place — re-stage and commit again.
+
+---
+
 ## Type Checking
 
 **Types must pass.** We are not strict about full type coverage yet, but all code must pass both type checkers without errors:

@@ -26,6 +26,7 @@ class TestBasicLogging:
             messages=[{"role": "user", "content": "help"}],
             metadata={"ask_sonnet_count": 2},
         )
+        assert path is not None
         data = json.loads(open(path).read())
         assert "timestamp" in data
         assert "messages" in data
@@ -37,10 +38,12 @@ class TestBasicLogging:
     def test_filename_contains_status_and_domain(self, tmp_path):
         rl = RolloutLogger(log_dir=str(tmp_path))
         path_success = rl.log_episode("retail", "t1", reward=1.0, messages=[])
+        assert path_success is not None
         assert "success" in path_success
         assert "retail" in path_success
 
         path_fail = rl.log_episode("airline", "t2", reward=0.0, messages=[])
+        assert path_fail is not None
         assert "failure" in path_fail
         assert "airline" in path_fail
 
@@ -104,6 +107,7 @@ class TestSerialization:
             {"role": "assistant", "content": "", "tool_calls": [tc_obj]},
         ]
         path = rl.log_episode("retail", "t1", reward=1.0, messages=messages)
+        assert path is not None
         data = json.loads(open(path).read())
         tc = data["messages"][0]["tool_calls"][0]
         assert tc["function"]["name"] == "get_order"
@@ -119,6 +123,7 @@ class TestSerialization:
             {"role": "assistant", "content": "text", "unparsed_tool_calls": [utc]},
         ]
         path = rl.log_episode("retail", "t1", reward=1.0, messages=messages)
+        assert path is not None
         data = json.loads(open(path).read())
         utc_data = data["messages"][0]["unparsed_tool_calls"][0]
         assert utc_data["raw_text"] == "bad json {"
@@ -130,6 +135,7 @@ class TestLoadEpisode:
         rl = RolloutLogger(log_dir=str(tmp_path))
         msgs = [{"role": "user", "content": "test"}]
         path = rl.log_episode("retail", "t1", reward=0.5, messages=msgs)
+        assert path is not None
         loaded = RolloutLogger.load_episode(path)
         assert loaded["domain"] == "retail"
         assert loaded["reward"] == 0.5
@@ -141,11 +147,13 @@ class TestBoundaryReward:
         """reward=0.5 is NOT success (threshold is > 0.5, not >=)."""
         rl = RolloutLogger(log_dir=str(tmp_path))
         path = rl.log_episode("retail", "t1", reward=0.5, messages=[])
+        assert path is not None
         assert "failure" in path
 
     def test_reward_just_above_half_is_success(self, tmp_path):
         rl = RolloutLogger(log_dir=str(tmp_path))
         path = rl.log_episode("retail", "t1", reward=0.51, messages=[])
+        assert path is not None
         assert "success" in path
 
 
@@ -154,6 +162,7 @@ class TestFilenameFormat:
         rl = RolloutLogger(log_dir=str(tmp_path))
         rl.start_iteration(7)
         path = rl.log_episode("retail", "t1", reward=1.0, messages=[])
+        assert path is not None
         assert "iter0007" in path
 
 

@@ -12,6 +12,7 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import cast
 
 import chz
 import tinker
@@ -23,7 +24,7 @@ from tinker_cookbook.recipes.taubench.components import (
     ExplorationMode,
     RolloutLogger,
 )
-from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder
+from tinker_cookbook.recipes.taubench.env import Tau2DatasetBuilder, Tau2Domain
 from tinker_cookbook.rl import train
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ def build_config(
         model_name_for_tokenizer=model_name,
         renderer_name=renderer_name,
         group_size=cli_config.group_size,
-        domain=cli_config.domain,
+        domain=cast(Tau2Domain, cli_config.domain),
         test_group_size=cli_config.test_group_size,
         num_epochs=cli_config.num_epochs,
         external_llm_model=cli_config.external_llm_model,
@@ -128,9 +129,11 @@ def build_config(
     )
 
     # Create epsilon policy if enabled
+    from collections.abc import Callable
+
     epsilon_policy: EpsilonAskSonnetPolicy | None = None
-    policy_factory: train.PolicyFactory | None = None
-    on_train_step = None
+    _policy_factory: train.PolicyFactory | None = None
+    _on_train_step: Callable[[int], None] | None = None
 
     if cli_config.epsilon_ask_sonnet:
         epsilon_policy = EpsilonAskSonnetPolicy(
@@ -145,22 +148,27 @@ def build_config(
             mode=cli_config.exploration_mode,
         )
 
-        def policy_factory(
+        _ep = epsilon_policy  # capture for closures
+
+        def _make_policy_factory(
             sampling_client: tinker.SamplingClient,
         ) -> TokenCompleter:
-            epsilon_policy.sampling_client = sampling_client
-            return epsilon_policy
+            _ep.sampling_client = sampling_client
+            return _ep
 
-        def on_train_step(step: int) -> None:
-            epsilon_policy.step()
+        def _make_on_train_step(step: int) -> None:
+            _ep.step()
             if step % 10 == 0:
-                metrics = epsilon_policy.get_metrics_and_reset()
+                metrics = _ep.get_metrics_and_reset()
                 logger.info(
                     f"Epsilon policy step {step}: epsilon={metrics['epsilon_policy/current_epsilon']:.3f}, "
                     f"forced={metrics['epsilon_policy/forced_ask_sonnet_total']}, "
                     f"policy_ask={metrics['epsilon_policy/policy_ask_sonnet_total']}, "
                     f"policy_other={metrics['epsilon_policy/policy_other_total']}"
                 )
+
+        _policy_factory = _make_policy_factory
+        _on_train_step = _make_on_train_step
 
         logger.info(
             f"Epsilon ask_sonnet enabled: mode={cli_config.exploration_mode.value}, "
@@ -181,8 +189,8 @@ def build_config(
         wandb_name=wandb_name,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         eval_temperature=cli_config.eval_temperature,
-        policy_factory=policy_factory,
-        on_train_step=on_train_step,
+        policy_factory=_policy_factory,
+        on_train_step=_on_train_step,
     )
     return config, epsilon_policy
 

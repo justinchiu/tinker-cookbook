@@ -134,7 +134,9 @@ class TestEpsilonAskSonnetMetrics:
         assert "epsilon_policy/forced_ask_sonnet_total" in metrics
         assert metrics["epsilon_policy/forced_ask_sonnet_total"] == 1
         assert metrics["epsilon_policy/total_turns"] == 2
-        assert abs(metrics["epsilon_policy/forced_ask_sonnet_rate"] - 0.5) < 1e-9
+        rate = metrics["epsilon_policy/forced_ask_sonnet_rate"]
+        assert isinstance(rate, float)
+        assert abs(rate - 0.5) < 1e-9
 
     def test_get_metrics_no_division_by_zero(self):
         m = EpsilonAskSonnetMetrics()
@@ -226,6 +228,7 @@ class TestShouldForceEpsilonGreedy:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 1
         ctx["last_action_was_ask_sonnet"] = False
         assert policy._should_force() is True
@@ -238,6 +241,7 @@ class TestShouldForceEpsilonGreedy:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 5
         ctx["last_action_was_ask_sonnet"] = False
         assert policy._should_force() is False
@@ -250,6 +254,7 @@ class TestShouldForceEpsilonGreedy:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 2
         ctx["last_action_was_ask_sonnet"] = True  # Last was ask_sonnet
         assert policy._should_force() is False
@@ -280,6 +285,7 @@ class TestShouldForceRaoBlackwell:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         for turn in range(10):
             ctx["assistant_turn_count"] = turn
             ctx["last_action_was_ask_sonnet"] = False
@@ -291,6 +297,7 @@ class TestShouldForceRaoBlackwell:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         # Turns before target
         for turn in range(3):
             ctx["assistant_turn_count"] = turn
@@ -308,6 +315,7 @@ class TestShouldForceRaoBlackwell:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 1
         ctx["last_action_was_ask_sonnet"] = False
         assert rb_policy._should_force() is True
@@ -324,6 +332,7 @@ class TestShouldForceRaoBlackwell:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 2
         ctx["last_action_was_ask_sonnet"] = True  # Previous was ask_sonnet
         assert rb_policy._should_force() is False
@@ -397,6 +406,7 @@ class TestCall:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 1  # Past first turn
 
         mock_input = MagicMock()
@@ -422,6 +432,7 @@ class TestCall:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 1
 
         mock_input = MagicMock()
@@ -477,6 +488,7 @@ class TestCall:
         from tinker_cookbook.recipes.taubench.components.epsilon_policy import _rollout_ctx
 
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         ctx["assistant_turn_count"] = 1
 
         mock_input = MagicMock()
@@ -501,4 +513,5 @@ class TestCall:
         assert policy.metrics.episode_policy_ask_sonnet == 1
         # last_action_was_ask_sonnet should be set
         ctx = _rollout_ctx.get()
+        assert ctx is not None
         assert ctx["last_action_was_ask_sonnet"] is True

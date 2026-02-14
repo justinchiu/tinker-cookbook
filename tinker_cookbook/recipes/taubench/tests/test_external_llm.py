@@ -1,3 +1,4 @@
+# pyright: reportPrivateImportUsage=false
 """Tests for ExternalLLMClient — external LLM calls with retry logic."""
 
 from unittest.mock import AsyncMock, MagicMock, patch

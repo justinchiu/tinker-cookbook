@@ -13,6 +13,7 @@ Or with custom parameters:
 
 import asyncio
 from datetime import datetime
+from typing import cast
 
 import chz
 from tinker_cookbook import cli_utils, model_info
@@ -24,6 +25,7 @@ from tinker_cookbook.recipes.taubench.sft_dataset import (
 from tinker_cookbook.renderers import TrainOnWhat
 from tinker_cookbook.supervised import train
 from tinker_cookbook.supervised.types import ChatDatasetBuilderCommonConfig
+from tinker_cookbook.utils.lr_scheduling import LRSchedule
 
 
 @chz.chz
@@ -176,7 +178,7 @@ def main():
         evaluator_builders=tau_eval_builders,
         infrequent_evaluator_builders=[],
         learning_rate=cli_config.learning_rate,
-        lr_schedule=cli_config.lr_schedule,
+        lr_schedule=cast(LRSchedule, cli_config.lr_schedule),
         num_epochs=cli_config.num_epochs,
         base_url=cli_config.base_url,
         wandb_project=cli_config.wandb_project,
