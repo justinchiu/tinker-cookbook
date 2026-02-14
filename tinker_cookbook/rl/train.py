@@ -18,7 +18,7 @@ from tinker.types import LossFnType
 from tqdm import tqdm
 
 from tinker_cookbook import checkpoint_utils
-from tinker_cookbook.completers import TinkerTokenCompleter
+from tinker_cookbook.completers import TinkerTokenCompleter, TokenCompleter
 from tinker_cookbook.display import colorize_example
 from tinker_cookbook.eval.evaluators import SamplingClientEvaluator, SamplingClientEvaluatorBuilder
 from tinker_cookbook.rl.data_processing import (
@@ -48,6 +48,10 @@ from tinker_cookbook.utils.trace import scope, trace_init, update_scope_context
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# Type for custom policy factory functions.
+# Given a SamplingClient, returns a TokenCompleter (e.g., EpsilonAskSonnetPolicy).
+PolicyFactory = Callable[[tinker.SamplingClient], TokenCompleter]
 
 
 @chz.chz
@@ -325,6 +329,17 @@ class Config:
     # Logtree configuration
     num_groups_to_log: int = 4  # Number of groups to log per iteration (0 = disable logging)
 
+    # Evaluation temperature (0.0 = greedy decoding for eval)
+    eval_temperature: float = 0.0
+
+    # Custom policy factory: given a SamplingClient, return a TokenCompleter.
+    # Used by taubench for epsilon-greedy exploration policies.
+    policy_factory: PolicyFactory | None = None
+
+    # Callback invoked after each training step. Receives the step index.
+    # Used by taubench for epsilon decay scheduling.
+    on_train_step: Callable[[int], None] | None = None
+
 
 @scope
 async def run_single_evaluation(evaluator, cfg, i_batch, sampling_client):
@@ -433,6 +448,7 @@ async def do_sync_training_with_stream_minibatch(
                     temperature=cfg.temperature,
                     do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
                     enable_logging=enable_logging,
+                    policy_factory=cfg.policy_factory,
                 )
                 metrics["time/trajectory_group_worker_loop/total"] = time.time() - t_start
                 if trajectory_group is not None:
@@ -569,6 +585,7 @@ async def do_async_training(
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
                 do_remove_constant_reward_groups=cfg.remove_constant_reward_groups,
+                policy_factory=cfg.policy_factory,
             )
             if trajectory_group is None:
                 trajectory_groups_queue.put_nowait(None)
@@ -730,8 +747,14 @@ async def do_group_rollout_and_filter_constant_reward(
     temperature: float,
     do_remove_constant_reward_groups: bool,
     enable_logging: bool = True,
+    policy_factory: PolicyFactory | None = None,
 ) -> TrajectoryGroup | None:
-    policy = TinkerTokenCompleter(sampling_client, max_tokens=max_tokens, temperature=temperature)
+    if policy_factory is not None:
+        policy = policy_factory(sampling_client)
+    else:
+        policy = TinkerTokenCompleter(
+            sampling_client, max_tokens=max_tokens, temperature=temperature
+        )
 
     with logtree.optional_enable_logging(enable_logging):
         trajectory_group = await do_group_rollout(env_group_builder, policy)
@@ -1082,6 +1105,7 @@ async def do_sync_training(
                         temperature=cfg.temperature,
                         do_remove_constant_reward_groups=False,
                         enable_logging=i < cfg.num_groups_to_log,
+                        policy_factory=cfg.policy_factory,
                     )
                     for i, builder in enumerate(env_group_builders_P)
                 ),
@@ -1101,6 +1125,10 @@ async def do_sync_training(
             env_group_builders_P,
             trajectory_groups_P,
         )
+
+        # Invoke on_train_step callback if configured
+        if cfg.on_train_step is not None:
+            cfg.on_train_step(i_batch)
 
         # Log metrics
         metrics.update(train_step_metrics)
@@ -1167,7 +1195,13 @@ async def main(
     dataset, maybe_test_dataset = await cfg.dataset_builder()
     evaluators = [evaluator() for evaluator in cfg.evaluator_builders]
     if maybe_test_dataset is not None:
-        evaluators.append(RLTestSetEvaluator(maybe_test_dataset, max_tokens=cfg.max_tokens))
+        evaluators.append(
+            RLTestSetEvaluator(
+                maybe_test_dataset,
+                max_tokens=cfg.max_tokens,
+                temperature=cfg.eval_temperature,
+            )
+        )
 
     num_batches = len(dataset)
     logger.info(f"Will train on {num_batches} batches")

@@ -24,8 +24,14 @@ def _truncate_log_value(value: Any, max_len: int = LOG_VALUE_MAX_LEN) -> tuple[s
 
 
 @logtree.scope_header_decorator
-async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
+async def do_single_rollout(policy: TokenCompleter, env: Env, rollout_idx: int = 0) -> Trajectory:
     transitions = []
+
+    # Call start_episode if policy supports it (e.g., EpsilonAskSonnetPolicy)
+    # Pass rollout_idx for Rao-Blackwell exploration mode
+    if hasattr(policy, "start_episode"):
+        policy.start_episode(rollout_idx=rollout_idx)
+
     ob, stop_condition = await env.initial_observation()
     while True:
         ac_with_logprobs = await policy(ob, stop_condition)
@@ -43,6 +49,11 @@ async def do_single_rollout(policy: TokenCompleter, env: Env) -> Trajectory:
         stop_condition = step_result.next_stop_condition
         if step_result.episode_done:
             break
+
+    # Call end_episode if policy supports it
+    if hasattr(policy, "end_episode"):
+        policy.end_episode()
+
     return Trajectory(transitions=transitions, final_ob=ob)
 
 
@@ -51,7 +62,9 @@ async def do_group_rollout(
     env_group_builder: EnvGroupBuilder, policy: TokenCompleter
 ) -> TrajectoryGroup:
     envs_G: Sequence[Env] = await env_group_builder.make_envs()
-    trajectories_G = await asyncio.gather(*[do_single_rollout(policy, env) for env in envs_G])
+    trajectories_G = await asyncio.gather(
+        *[do_single_rollout(policy, env, rollout_idx=i) for i, env in enumerate(envs_G)]
+    )
     rewards_and_metrics_G = await env_group_builder.compute_group_rewards(trajectories_G, envs_G)
     rewards_G, metrics_G = zip(*rewards_and_metrics_G, strict=True)
 

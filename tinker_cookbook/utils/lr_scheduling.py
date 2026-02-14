@@ -6,7 +6,7 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 
-LRSchedule = Literal["linear", "cosine", "constant"]
+LRSchedule = Literal["linear", "cosine", "cosine_warmup", "constant"]
 
 
 def compute_schedule_lr_multiplier(lr_schedule: LRSchedule, step: int, total_steps: int) -> float:
@@ -17,6 +17,14 @@ def compute_schedule_lr_multiplier(lr_schedule: LRSchedule, step: int, total_ste
         return 1 - step / total_steps
     elif lr_schedule == "cosine":
         return 0.5 * (1 + math.cos(math.pi * step / total_steps))
+    elif lr_schedule == "cosine_warmup":
+        # Cosine with 5% warmup
+        warmup_steps = int(0.05 * total_steps)
+        if step < warmup_steps:
+            return step / warmup_steps
+        else:
+            progress = (step - warmup_steps) / (total_steps - warmup_steps)
+            return 0.5 * (1 + math.cos(math.pi * progress))
     elif lr_schedule == "constant":
         return 1
     else:
