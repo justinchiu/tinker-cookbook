@@ -61,6 +61,11 @@ class CLIConfig:
     sonnet_token_penalty_per_1k: float = 0.0
     tau2_user_token_penalty_per_1k: float = 0.0
     tau2_user_cost_penalty: float = 0.0
+    # Effective cost reward (replaces old penalty system when set)
+    effective_cost_budget: float | None = None
+    sonnet_cost_multiplier: float = 30.0
+    # Advantage normalization
+    normalize_advantages: bool = False
     # Epsilon-greedy policy for ask_sonnet exploration
     epsilon_ask_sonnet: bool = False
     initial_epsilon: float = 0.3
@@ -124,6 +129,8 @@ def build_config(
         sonnet_token_penalty_per_1k=cli_config.sonnet_token_penalty_per_1k,
         tau2_user_token_penalty_per_1k=cli_config.tau2_user_token_penalty_per_1k,
         tau2_user_cost_penalty=cli_config.tau2_user_cost_penalty,
+        effective_cost_budget=cli_config.effective_cost_budget,
+        sonnet_cost_multiplier=cli_config.sonnet_cost_multiplier,
         rollout_logger=train_rollout_logger,
         eval_rollout_logger=eval_rollout_logger,
     )
@@ -189,6 +196,7 @@ def build_config(
         wandb_name=wandb_name,
         load_checkpoint_path=cli_config.load_checkpoint_path,
         eval_temperature=cli_config.eval_temperature,
+        normalize_advantages=cli_config.normalize_advantages,
         policy_factory=_policy_factory,
         on_train_step=_on_train_step,
     )
