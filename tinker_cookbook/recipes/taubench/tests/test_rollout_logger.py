@@ -98,9 +98,7 @@ class TestSerialization:
         """ToolCall pydantic objects should serialize to dicts."""
         from tinker_cookbook.renderers.base import ToolCall
 
-        tc_obj = ToolCall(
-            function=ToolCall.FunctionBody(name="get_order", arguments='{"id": "1"}')
-        )
+        tc_obj = ToolCall(function=ToolCall.FunctionBody(name="get_order", arguments='{"id": "1"}'))
         rl = RolloutLogger(log_dir=str(tmp_path))
         messages = [
             {"role": "assistant", "content": "", "tool_calls": [tc_obj]},
