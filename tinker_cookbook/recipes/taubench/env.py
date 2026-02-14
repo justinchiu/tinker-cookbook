@@ -533,62 +533,81 @@ class Tau2EnvGroupBuilder(EnvGroupBuilder):
         The returned final_reward is adjusted so that get_total_rewards() yields the
         desired total: final_reward = desired_total - sum(step_rewards).
         """
-        results = []
+        if self.effective_cost_budget is not None:
+            return self._compute_effective_cost_rewards(trajectory_group, env_group)
+        else:
+            return self._compute_penalty_rewards(env_group)
+
+    def _compute_token_metrics(self, tau2_env: Tau2Env) -> dict[str, float | int]:
+        """Compute common token metrics for both reward modes."""
+        return {
+            "ask_sonnet_count": tau2_env.ask_sonnet_call_count,
+            "empty_advisor_responses": tau2_env.empty_advisor_responses,
+            "sonnet_input_tokens": tau2_env.sonnet_input_tokens,
+            "sonnet_output_tokens": tau2_env.sonnet_output_tokens,
+            "policy_input_tokens": tau2_env.policy_input_tokens,
+            "policy_output_tokens": tau2_env.policy_output_tokens,
+            "total_sonnet_tokens": tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens,
+            "total_policy_tokens": tau2_env.policy_input_tokens + tau2_env.policy_output_tokens,
+            "tau2_user_input_tokens": tau2_env.tau2_user_input_tokens,
+            "tau2_user_output_tokens": tau2_env.tau2_user_output_tokens,
+            "tau2_user_cost_usd": tau2_env.tau2_user_cost_usd,
+        }
+
+    def _compute_penalty_rewards(
+        self, env_group: Sequence[Env]
+    ) -> list[tuple[float, dict[str, float | int]]]:
+        """Old penalty system: subtract penalties from reward."""
+        results: list[tuple[float, dict[str, float | int]]] = []
+        for env in env_group:
+            tau2_env = cast(Tau2Env, env)
+            metrics = self._compute_token_metrics(tau2_env)
+
+            ask_sonnet_penalty = self.ask_sonnet_penalty * tau2_env.ask_sonnet_call_count
+            sonnet_token_penalty = self.sonnet_token_penalty_per_1k * (
+                (tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens) / 1000.0
+            )
+            tau2_user_token_penalty = self.tau2_user_token_penalty_per_1k * (
+                (tau2_env.tau2_user_input_tokens + tau2_env.tau2_user_output_tokens) / 1000.0
+            )
+            tau2_user_cost_penalty = self.tau2_user_cost_penalty * tau2_env.tau2_user_cost_usd
+            total_penalty = (
+                ask_sonnet_penalty
+                + sonnet_token_penalty
+                + tau2_user_token_penalty
+                + tau2_user_cost_penalty
+            )
+
+            metrics["ask_sonnet_penalty"] = ask_sonnet_penalty
+            metrics["sonnet_token_penalty"] = sonnet_token_penalty
+            metrics["tau2_user_token_penalty"] = tau2_user_token_penalty
+            metrics["tau2_user_cost_penalty"] = tau2_user_cost_penalty
+            metrics["total_cost_penalty"] = total_penalty
+            results.append((-total_penalty, metrics))
+
+        return results
+
+    def _compute_effective_cost_rewards(
+        self, trajectory_group: list, env_group: Sequence[Env]
+    ) -> list[tuple[float, dict[str, float | int]]]:
+        """Effective cost reward: success * max(0, budget - cost)."""
+        assert self.effective_cost_budget is not None
+        results: list[tuple[float, dict[str, float | int]]] = []
         for traj, env in zip(trajectory_group, env_group, strict=True):
             tau2_env = cast(Tau2Env, env)
+            metrics = self._compute_token_metrics(tau2_env)
+
             step_reward_sum = sum(t.reward for t in traj.transitions)
+            effective_cost = tau2_env.policy_output_tokens + self.sonnet_cost_multiplier * (
+                tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens
+            )
+            task_success = 1.0 if step_reward_sum > 0.5 else 0.0
+            desired_total = task_success * max(0.0, self.effective_cost_budget - effective_cost)
+            final_reward = desired_total - step_reward_sum
 
-            # Common token metrics
-            metrics: dict[str, float | int] = {
-                "ask_sonnet_count": tau2_env.ask_sonnet_call_count,
-                "empty_advisor_responses": tau2_env.empty_advisor_responses,
-                "sonnet_input_tokens": tau2_env.sonnet_input_tokens,
-                "sonnet_output_tokens": tau2_env.sonnet_output_tokens,
-                "policy_input_tokens": tau2_env.policy_input_tokens,
-                "policy_output_tokens": tau2_env.policy_output_tokens,
-                "total_sonnet_tokens": tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens,
-                "total_policy_tokens": tau2_env.policy_input_tokens + tau2_env.policy_output_tokens,
-                "tau2_user_input_tokens": tau2_env.tau2_user_input_tokens,
-                "tau2_user_output_tokens": tau2_env.tau2_user_output_tokens,
-                "tau2_user_cost_usd": tau2_env.tau2_user_cost_usd,
-            }
-
-            if self.effective_cost_budget is not None:
-                # Effective cost reward mode
-                effective_cost = tau2_env.policy_output_tokens + self.sonnet_cost_multiplier * (
-                    tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens
-                )
-                task_success = 1.0 if step_reward_sum > 0.5 else 0.0
-                desired_total = task_success * max(0.0, self.effective_cost_budget - effective_cost)
-                final_reward = desired_total - step_reward_sum
-
-                metrics["effective_cost"] = effective_cost
-                metrics["effective_cost_budget"] = self.effective_cost_budget
-                metrics["task_success"] = task_success
-            else:
-                # Old penalty system
-                ask_sonnet_penalty = self.ask_sonnet_penalty * tau2_env.ask_sonnet_call_count
-                sonnet_token_penalty = self.sonnet_token_penalty_per_1k * (
-                    (tau2_env.sonnet_input_tokens + tau2_env.sonnet_output_tokens) / 1000.0
-                )
-                tau2_user_token_penalty = self.tau2_user_token_penalty_per_1k * (
-                    (tau2_env.tau2_user_input_tokens + tau2_env.tau2_user_output_tokens) / 1000.0
-                )
-                tau2_user_cost_penalty = self.tau2_user_cost_penalty * tau2_env.tau2_user_cost_usd
-                total_penalty = (
-                    ask_sonnet_penalty
-                    + sonnet_token_penalty
-                    + tau2_user_token_penalty
-                    + tau2_user_cost_penalty
-                )
-                final_reward = -total_penalty
-
-                metrics["ask_sonnet_penalty"] = ask_sonnet_penalty
-                metrics["sonnet_token_penalty"] = sonnet_token_penalty
-                metrics["tau2_user_token_penalty"] = tau2_user_token_penalty
-                metrics["tau2_user_cost_penalty"] = tau2_user_cost_penalty
-                metrics["total_cost_penalty"] = total_penalty
-
+            metrics["effective_cost"] = effective_cost
+            metrics["effective_cost_budget"] = self.effective_cost_budget
+            metrics["task_success"] = task_success
             results.append((final_reward, metrics))
 
         return results
