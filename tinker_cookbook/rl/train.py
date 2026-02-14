@@ -332,6 +332,12 @@ class Config:
     # Evaluation temperature (0.0 = greedy decoding for eval)
     eval_temperature: float = 0.0
 
+    # Advantage normalization: standardize advantages to mean=0, std=1
+    normalize_advantages: bool = False
+
+    # ExIt strategy weights: scale advantages by strategy_weights[strategy_id] / count
+    strategy_weights: dict[str, float] | None = None
+
     # Custom policy factory: given a SamplingClient, return a TokenCompleter.
     # Used by taubench for epsilon-greedy exploration policies.
     policy_factory: PolicyFactory | None = None
@@ -799,6 +805,8 @@ async def prepare_minibatch(
     kl_reference_client: tinker.SamplingClient | None,
     kl_penalty_coef: float,
     kl_discount_factor: float,
+    normalize_advantages: bool = False,
+    strategy_weights: dict[str, float] | None = None,
 ) -> tuple[list[tinker.Datum], dict[str, Any]]:
     """Converts the trajectories into a minibatch, and provides metrics about the minibatch"""
 
@@ -813,8 +821,12 @@ async def prepare_minibatch(
 
     # Assemble training data
     with timed("assemble_training_data", metrics):
-        advantages_P = compute_advantages(trajectory_groups_P)
-        data_D, _metadata_D = assemble_training_data(trajectory_groups_P, advantages_P)
+        advantages_P = compute_advantages(
+            trajectory_groups_P, normalize_advantages=normalize_advantages
+        )
+        data_D, _metadata_D = assemble_training_data(
+            trajectory_groups_P, advantages_P, strategy_weights=strategy_weights
+        )
 
     # Incorporate KL penalty if configured
     if kl_penalty_coef > 0 and kl_reference_client is not None:
@@ -937,6 +949,8 @@ async def do_train_step_streaming_and_get_sampling_client(
                 kl_reference_client,
                 kl_penalty_coef=cfg.kl_penalty_coef,
                 kl_discount_factor=cfg.kl_discount_factor,
+                normalize_advantages=cfg.normalize_advantages,
+                strategy_weights=cfg.strategy_weights,
             )
             metrics.update(prepare_minibatch_metrics)
 
@@ -1019,6 +1033,8 @@ async def do_train_step_and_get_sampling_client(
         kl_reference_client,
         kl_penalty_coef=cfg.kl_penalty_coef,
         kl_discount_factor=cfg.kl_discount_factor,
+        normalize_advantages=cfg.normalize_advantages,
+        strategy_weights=cfg.strategy_weights,
     )
     metrics.update(prepare_minibatch_metrics)
 

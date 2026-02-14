@@ -6,7 +6,9 @@ and assembling training batches.
 """
 
 import logging
-from typing import List
+from collections import Counter
+from dataclasses import dataclass, field
+from typing import Callable, List
 
 import tinker
 import torch
@@ -20,14 +22,26 @@ from tinker_cookbook.utils.misc_utils import all_same, safezip
 logger = logging.getLogger(__name__)
 
 
-def compute_advantages(trajectory_groups_P: List[TrajectoryGroup]) -> List[torch.Tensor]:
-    """Compute advantages for each trajectory, centered within groups."""
+def compute_advantages(
+    trajectory_groups_P: List[TrajectoryGroup],
+    normalize_advantages: bool = False,
+) -> List[torch.Tensor]:
+    """Compute advantages for each trajectory, centered within groups.
+
+    When normalize_advantages is True, advantages are standardized to mean=0, std=1.
+    When False (default), advantages are only mean-centered.
+    """
     advantages_P: list[torch.Tensor] = []
 
     for traj_group in trajectory_groups_P:
         rewards_G = torch.tensor(traj_group.get_total_rewards())
         # Center advantages within the group
         advantages_G = rewards_G - rewards_G.mean()
+        if normalize_advantages:
+            std = advantages_G.std()
+            if std > 0:
+                advantages_G = advantages_G / (std + 1e-8)
+            # If std == 0, all advantages are already 0 after centering
         advantages_P.append(advantages_G)
 
     return advantages_P
@@ -83,7 +97,27 @@ def _flatten_chunks(chunks: list[tinker.ModelInputChunk]) -> FlatOb:
     return out
 
 
-def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.Datum]:
+@dataclass
+class _SequenceAccumulator:
+    """Accumulates tokens, logprobs, advantages, and mask for trajectory-to-data conversion."""
+
+    full_sequence: list[FlatObElem] = field(default_factory=list)
+    sampled_logprobs: list[float] = field(default_factory=list)
+    advantages: list[float] = field(default_factory=list)
+    mask: list[float] = field(default_factory=list)
+
+    def clear(self) -> None:
+        self.full_sequence = []
+        self.sampled_logprobs = []
+        self.advantages = []
+        self.mask = []
+
+
+def trajectory_to_data(
+    traj: Trajectory,
+    traj_advantage: float,
+    context_transform: Callable[[tinker.ModelInput], tinker.ModelInput] | None = None,
+) -> list[tinker.Datum]:
     """
     Return one or more Datum objects corresponding to the trajectory.
     If the sequence grows by appending, i.e., each successive observation contains
@@ -101,29 +135,19 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
 
     Then we will merge the first two observation-action pairs into a single Datum,
     and the last observation-action pair into a separate Datum.
+
+    If context_transform is set, observations are transformed before processing.
     """
-
-    class SequenceAccumulator:
-        full_sequence: list[FlatObElem] = []
-        sampled_logprobs: list[float] = []
-        advantages: list[float] = []
-        mask: list[float] = []
-
-        @classmethod
-        def clear(cls):
-            cls.full_sequence = []
-            cls.sampled_logprobs = []
-            cls.advantages = []
-            cls.mask = []
+    acc = _SequenceAccumulator()
 
     def make_datum_from_state():
-        all_tokens_T = _flat_ob_to_model_input(SequenceAccumulator.full_sequence)
+        all_tokens_T = _flat_ob_to_model_input(acc.full_sequence)
         input_tokens_T, target_tokens_T = create_rightshifted_model_input_and_leftshifted_targets(
             list(all_tokens_T.chunks)
         )
-        sampled_logprobs_T = SequenceAccumulator.sampled_logprobs[1:]
-        advantages_T = SequenceAccumulator.advantages[1:]
-        mask_T = SequenceAccumulator.mask[1:]
+        sampled_logprobs_T = acc.sampled_logprobs[1:]
+        advantages_T = acc.advantages[1:]
+        mask_T = acc.mask[1:]
         assert (
             input_tokens_T.length
             == len(target_tokens_T)
@@ -144,28 +168,26 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
     data: list[tinker.Datum] = []
     for transition in traj.transitions:
         ob = transition.ob
+        if context_transform is not None:
+            ob = context_transform(ob)
         ob_flat = _flatten_chunks(ob.chunks)
         ac_with_logprobs = transition.ac
-        if len(SequenceAccumulator.full_sequence) == 0:
+        if len(acc.full_sequence) == 0:
             delta_ob_flat = ob_flat
-        elif _is_prefix(SequenceAccumulator.full_sequence, ob_flat):
-            delta_ob_flat = ob_flat[len(SequenceAccumulator.full_sequence) :]
+        elif _is_prefix(acc.full_sequence, ob_flat):
+            delta_ob_flat = ob_flat[len(acc.full_sequence) :]
         else:
             data.append(make_datum_from_state())
-            SequenceAccumulator.clear()
+            acc.clear()
             delta_ob_flat = ob_flat
         delta_ob_len = _flat_ob_token_len(delta_ob_flat)
-        SequenceAccumulator.full_sequence.extend(delta_ob_flat)
-        SequenceAccumulator.full_sequence.extend(ac_with_logprobs.tokens)
-        SequenceAccumulator.sampled_logprobs.extend(
-            [0.0] * delta_ob_len + ac_with_logprobs.logprobs
-        )
-        SequenceAccumulator.advantages.extend(
-            [0] * delta_ob_len + [traj_advantage] * len(ac_with_logprobs.tokens)
-        )
-        SequenceAccumulator.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
+        acc.full_sequence.extend(delta_ob_flat)
+        acc.full_sequence.extend(ac_with_logprobs.tokens)
+        acc.sampled_logprobs.extend([0.0] * delta_ob_len + ac_with_logprobs.logprobs)
+        acc.advantages.extend([0] * delta_ob_len + [traj_advantage] * len(ac_with_logprobs.tokens))
+        acc.mask.extend([0.0] * delta_ob_len + [1.0] * len(ac_with_logprobs.tokens))
 
-    if SequenceAccumulator.full_sequence:
+    if acc.full_sequence:
         data.append(make_datum_from_state())
 
     return data
@@ -174,19 +196,51 @@ def trajectory_to_data(traj: Trajectory, traj_advantage: float) -> list[tinker.D
 def assemble_training_data(
     trajectory_groups_P: List[TrajectoryGroup],
     advantages_P: List[torch.Tensor],
+    strategy_weights: dict[str, float] | None = None,
+    context_transform: Callable[[tinker.ModelInput], tinker.ModelInput] | None = None,
 ) -> tuple[List[tinker.Datum], List[dict[str, int]]]:
-    """Convert trajectories to training data format."""
+    """Convert trajectories to training data format.
+
+    When strategy_weights is set, advantages are scaled by
+    strategy_weights[group.strategy_id] / count_of_that_strategy.
+    """
+    # Compute strategy scaling factors if needed
+    strategy_scales: dict[int, float] | None = None
+    if strategy_weights is not None:
+        strategy_counts: Counter[str | None] = Counter()
+        for traj_group in trajectory_groups_P:
+            strategy_counts[traj_group.strategy_id] += 1
+
+        strategy_scales = {}
+        for i_group, traj_group in enumerate(trajectory_groups_P):
+            sid = traj_group.strategy_id
+            if sid is None:
+                raise ValueError(
+                    "strategy_weights is set but trajectory group has strategy_id=None"
+                )
+            if sid not in strategy_weights:
+                raise ValueError(
+                    f"strategy_id '{sid}' not found in strategy_weights {strategy_weights}"
+                )
+            strategy_scales[i_group] = strategy_weights[sid] / strategy_counts[sid]
+
     data_D: list[tinker.Datum] = []
     metadata_D: list[dict[str, int]] = []
 
     for i_group, (traj_group, advantages_G) in enumerate(
         safezip(trajectory_groups_P, advantages_P)
     ):
+        # Apply strategy weight scaling
+        if strategy_scales is not None:
+            advantages_G = advantages_G * strategy_scales[i_group]
+
         for i_traj, (traj, traj_advantage) in enumerate(
             safezip(traj_group.trajectories_G, advantages_G)
         ):
             # Build the full sequence from the trajectory
-            new_data = trajectory_to_data(traj, float(traj_advantage))
+            new_data = trajectory_to_data(
+                traj, float(traj_advantage), context_transform=context_transform
+            )
             data_D.extend(new_data)
             metadata_D.extend([dict(group_idx=i_group, traj_idx=i_traj) for _ in new_data])
 

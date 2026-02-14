@@ -125,6 +125,11 @@ class EnvGroupBuilder(ABC):
         """
         return []
 
+    @property
+    def strategy_id(self) -> str | None:
+        """ExIt strategy identifier. Override in subclasses to enable multi-strategy training."""
+        return None
+
 
 @dataclass
 class TrajectoryGroup:
@@ -136,6 +141,7 @@ class TrajectoryGroup:
     trajectories_G: list[Trajectory]
     final_rewards_G: list[float]  # computed by the EnvGroupBuilder, looking at whole group
     metrics_G: list[Metrics]
+    strategy_id: str | None = None  # ExIt strategy identifier
 
     def get_total_rewards(self) -> list[float]:
         """
